@@ -10,14 +10,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,17 +33,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.google.firebase.auth.EmailAuthProvider
+import com.example.chikauto.data.model.AppOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.storage.FirebaseStorage
 
 @Composable
 fun EditProfileDialog(
-    role: String, // "client" ou "agency"
+    role: String,
     currentName: String,
     currentEmail: String,
     currentPhone: String,
@@ -50,36 +56,48 @@ fun EditProfileDialog(
     val db = FirebaseFirestore.getInstance()
     val storage = FirebaseStorage.getInstance()
 
-    val user = auth.currentUser
-    val uid = user?.uid ?: ""
+    val uid = auth.currentUser?.uid ?: ""
 
     var name by remember { mutableStateOf(currentName) }
     var email by remember { mutableStateOf(currentEmail) }
     var phone by remember { mutableStateOf(currentPhone) }
     var city by remember { mutableStateOf(currentCity) }
 
-    var currentPassword by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var imageUrl by remember { mutableStateOf(currentImageUrl) }
+    var finalImageUrl by remember { mutableStateOf(currentImageUrl) }
 
-    var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        selectedImageUri = uri
+        if (uri != null) {
+            selectedImageUri = uri
+            message = "Photo sélectionnée."
+        } else {
+            message = "Aucune photo sélectionnée."
+        }
     }
 
-    fun updateFirestore(finalImageUrl: String) {
+    fun updateFirestoreProfile(imageUrl: String) {
+        if (uid.isBlank()) {
+            loading = false
+            message = "Erreur : utilisateur non connecté."
+            return
+        }
+
+        val cleanName = name.trim()
+        val cleanEmail = email.trim()
+        val cleanPhone = phone.trim()
+        val cleanCity = city.trim()
+
         val userUpdates = hashMapOf<String, Any>(
-            "fullName" to name.trim(),
-            "email" to email.trim(),
-            "phone" to phone.trim(),
-            "city" to city.trim(),
-            "profileImageUrl" to finalImageUrl
+            "fullName" to cleanName,
+            "email" to cleanEmail,
+            "phone" to cleanPhone,
+            "city" to cleanCity,
+            "profileImageUrl" to imageUrl
         )
 
         db.collection("users")
@@ -88,11 +106,11 @@ fun EditProfileDialog(
             .addOnSuccessListener {
                 if (role == "agency") {
                     val agencyUpdates = hashMapOf<String, Any>(
-                        "agencyName" to name.trim(),
-                        "email" to email.trim(),
-                        "phone" to phone.trim(),
-                        "city" to city.trim(),
-                        "profileImageUrl" to finalImageUrl
+                        "agencyName" to cleanName,
+                        "email" to cleanEmail,
+                        "phone" to cleanPhone,
+                        "city" to cleanCity,
+                        "profileImageUrl" to imageUrl
                     )
 
                     db.collection("agencies")
@@ -101,255 +119,242 @@ fun EditProfileDialog(
                         .addOnSuccessListener {
                             loading = false
                             onUpdated()
-                            onDismiss()
                         }
-                        .addOnFailureListener {
+                        .addOnFailureListener { exception ->
                             loading = false
-                            message = "Erreur modification agence : ${it.message}"
+                            message = "Erreur modification agence : ${exception.message}"
                         }
                 } else {
                     loading = false
                     onUpdated()
-                    onDismiss()
                 }
             }
-            .addOnFailureListener {
+            .addOnFailureListener { exception ->
                 loading = false
-                message = "Erreur modification profil : ${it.message}"
+                message = "Erreur modification profil : ${exception.message}"
             }
     }
 
-    fun uploadImageAndUpdate() {
-        val uri = selectedImageUri
+    fun uploadImageThenUpdateProfile() {
+        val imageUri = selectedImageUri
 
-        if (uri == null) {
-            updateFirestore(imageUrl)
+        if (uid.isBlank()) {
+            loading = false
+            message = "Erreur : utilisateur non connecté."
             return
         }
+
+        if (imageUri == null) {
+            updateFirestoreProfile(finalImageUrl)
+            return
+        }
+
+        val fileName = "profile_${System.currentTimeMillis()}.jpg"
 
         val ref = storage.reference
             .child("profile_images")
-            .child("$uid.jpg")
+            .child(uid)
+            .child(fileName)
 
-        ref.putFile(uri)
+        ref.putFile(imageUri)
+            .addOnProgressListener {
+                message = "Téléversement de la photo..."
+            }
             .addOnSuccessListener {
                 ref.downloadUrl
                     .addOnSuccessListener { downloadUri ->
-                        imageUrl = downloadUri.toString()
-                        updateFirestore(downloadUri.toString())
+                        finalImageUrl = downloadUri.toString()
+                        updateFirestoreProfile(downloadUri.toString())
                     }
-                    .addOnFailureListener {
+                    .addOnFailureListener { exception ->
                         loading = false
-                        message = "Erreur récupération image : ${it.message}"
+                        message = "Photo envoyée, mais lien introuvable : ${exception.message}"
                     }
             }
-            .addOnFailureListener {
+            .addOnFailureListener { exception ->
                 loading = false
-                message = "Erreur upload image : ${it.message}"
-            }
-    }
-
-    fun saveProfile() {
-        if (uid.isBlank() || user == null) {
-            message = "Utilisateur introuvable."
-            return
-        }
-
-        if (name.isBlank() || email.isBlank() || phone.isBlank() || city.isBlank()) {
-            message = "Veuillez remplir tous les champs."
-            return
-        }
-
-        if (currentPassword.isBlank()) {
-            message = "Veuillez entrer votre mot de passe actuel."
-            return
-        }
-
-        if (!email.contains("@") || !email.contains(".")) {
-            message = "Email invalide."
-            return
-        }
-
-        if (newPassword.isNotBlank() && newPassword.length < 6) {
-            message = "Le nouveau mot de passe doit contenir au moins 6 caractères."
-            return
-        }
-
-        loading = true
-        message = ""
-
-        val credential = EmailAuthProvider.getCredential(
-            user.email ?: currentEmail,
-            currentPassword
-        )
-
-        user.reauthenticate(credential)
-            .addOnSuccessListener {
-                val emailChanged = email.trim() != (user.email ?: "")
-                val passwordChanged = newPassword.isNotBlank()
-
-                fun afterAuthUpdates() {
-                    uploadImageAndUpdate()
-                }
-
-                if (emailChanged) {
-                    user.updateEmail(email.trim())
-                        .addOnSuccessListener {
-                            if (passwordChanged) {
-                                user.updatePassword(newPassword)
-                                    .addOnSuccessListener { afterAuthUpdates() }
-                                    .addOnFailureListener {
-                                        loading = false
-                                        message = "Erreur mot de passe : ${it.message}"
-                                    }
-                            } else {
-                                afterAuthUpdates()
-                            }
-                        }
-                        .addOnFailureListener {
-                            loading = false
-                            message = "Erreur email : ${it.message}"
-                        }
-                } else {
-                    if (passwordChanged) {
-                        user.updatePassword(newPassword)
-                            .addOnSuccessListener { afterAuthUpdates() }
-                            .addOnFailureListener {
-                                loading = false
-                                message = "Erreur mot de passe : ${it.message}"
-                            }
-                    } else {
-                        afterAuthUpdates()
-                    }
-                }
-            }
-            .addOnFailureListener {
-                loading = false
-                message = "Mot de passe actuel incorrect."
+                message = "Erreur upload photo : ${exception.message}"
             }
     }
 
     AlertDialog(
         onDismissRequest = {
-            if (!loading) onDismiss()
+            if (!loading) {
+                onDismiss()
+            }
         },
         title = {
             Text("Modifier le profil")
         },
         text = {
-            Column(
+            LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .height(90.dp)
-                        .width(90.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF1DA1F2)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        selectedImageUri != null -> {
-                            AsyncImage(
-                                model = selectedImageUri,
-                                contentDescription = "Photo sélectionnée",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-
-                        imageUrl.isNotBlank() -> {
-                            AsyncImage(
-                                model = imageUrl,
-                                contentDescription = "Photo profil",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-
-                        else -> {
-                            Text(
-                                text = name.take(1).uppercase(),
-                                color = Color.White,
-                                style = MaterialTheme.typography.headlineMedium
-                            )
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .height(95.dp)
+                                .fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .height(95.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1DA1F2)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (selectedImageUri != null) {
+                                    AsyncImage(
+                                        model = selectedImageUri,
+                                        contentDescription = "Nouvelle photo de profil",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else if (currentImageUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = currentImageUrl,
+                                        contentDescription = "Photo de profil actuelle",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Text(
+                                        text = name.take(1).ifBlank { "P" }.uppercase(),
+                                        color = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                OutlinedButton(
-                    onClick = {
-                        imagePicker.launch("image/*")
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Choisir une photo de profil")
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            if (!loading) {
+                                imagePicker.launch("image/*")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Choisir une nouvelle photo")
+                    }
                 }
 
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = {
-                        Text(if (role == "agency") "Nom de l'agence" else "Nom complet")
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                item {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = {
+                            name = it
+                            message = ""
+                        },
+                        label = {
+                            Text(if (role == "agency") "Nom de l'agence" else "Nom complet")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
 
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
-                    label = { Text("Téléphone") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                item {
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = {
+                            email = it
+                            message = ""
+                        },
+                        label = { Text("Email") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
 
-                OutlinedTextField(
-                    value = city,
-                    onValueChange = { city = it },
-                    label = { Text("Wilaya") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                item {
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = {
+                            phone = it
+                            message = ""
+                        },
+                        label = { Text("Téléphone") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
 
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Nouvel email") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = { newPassword = it },
-                    label = { Text("Nouveau mot de passe facultatif") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = currentPassword,
-                    onValueChange = { currentPassword = it },
-                    label = { Text("Mot de passe actuel obligatoire") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                item {
+                    AppDropdown(
+                        label = "Wilaya",
+                        value = city,
+                        items = AppOptions.wilayas,
+                        onItemSelected = {
+                            city = it
+                            message = ""
+                        }
+                    )
+                }
 
                 if (message.isNotEmpty()) {
-                    Text(
-                        text = message,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                    item {
+                        Text(
+                            text = message,
+                            color = if (
+                                message.contains("sélectionnée", ignoreCase = true) ||
+                                message.contains("Téléversement", ignoreCase = true)
+                            ) {
+                                Color(0xFF1DA1F2)
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = { saveProfile() },
-                enabled = !loading
+                onClick = {
+                    if (loading) return@Button
+
+                    if (name.isBlank() || email.isBlank() || phone.isBlank() || city.isBlank()) {
+                        message = "Veuillez remplir tous les champs."
+                        return@Button
+                    }
+
+                    if (!email.contains("@") || !email.contains(".")) {
+                        message = "Email invalide."
+                        return@Button
+                    }
+
+                    if (!AppOptions.wilayas.contains(city)) {
+                        message = "Veuillez choisir une wilaya valide."
+                        return@Button
+                    }
+
+                    loading = true
+                    message = ""
+                    uploadImageThenUpdateProfile()
+                },
+                enabled = !loading,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF1DA1F2)
+                )
             ) {
-                Text(if (loading) "Modification..." else "Enregistrer")
+                Text(if (loading) "Enregistrement..." else "Enregistrer")
             }
         },
         dismissButton = {
-            OutlinedButton(
-                onClick = onDismiss,
-                enabled = !loading
+            TextButton(
+                onClick = {
+                    if (!loading) {
+                        onDismiss()
+                    }
+                }
             ) {
                 Text("Annuler")
             }

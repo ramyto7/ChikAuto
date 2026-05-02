@@ -91,7 +91,7 @@ fun LoginScreen(navController: NavController) {
                         emailOrUsername = it
                         message = ""
                     },
-                    label = { Text("Email ou nom admin") },
+                    label = { Text("Email ") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp)
                 )
@@ -132,7 +132,7 @@ fun LoginScreen(navController: NavController) {
                         }
 
                         if (!emailOrUsername.contains("@")) {
-                            message = "Veuillez entrer un email valide ou le nom admin."
+                            message = "Veuillez entrer un email valide ."
                             return@Button
                         }
 

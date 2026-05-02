@@ -1,0 +1,47 @@
+name: ChikAuto Android CI CD
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-test-package:
+    name: Build, Test and Package APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Donner permission à Gradle
+        run: chmod +x ./gradlew
+
+      - name: Vérifier la version Gradle
+        run: ./gradlew --version
+
+      - name: Compiler le projet Android
+        run: ./gradlew assembleDebug
+
+      - name: Lancer les tests unitaires
+        run: ./gradlew testDebugUnitTest
+
+      - name: Générer l'APK Debug
+        run: ./gradlew assembleDebug
+
+      - name: Sauvegarder l'APK comme artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChikAuto-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
