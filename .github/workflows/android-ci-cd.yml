@@ -31,7 +31,7 @@ jobs:
       - name: Vérifier la version Gradle
         run: ./gradlew --version
 
-      - name: Compiler le projet Android
+      - name: Compiler l'application Android
         run: ./gradlew assembleDebug
 
       - name: Lancer les tests unitaires
