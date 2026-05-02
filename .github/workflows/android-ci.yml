@@ -1,0 +1,37 @@
+name: ChickAUTO Android CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-test:
+    name: Build and Test Android App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Donner permission à Gradle
+        run: chmod +x ./gradlew
+
+      - name: Vérifier le projet avec Gradle
+        run: ./gradlew clean
+
+      - name: Compiler l'application
+        run: ./gradlew assembleDebug
+
+      - name: Lancer les tests unitaires
+        run: ./gradlew testDebugUnitTest
+
+      - name: Lancer Android Lint
+        run: ./gradlew lintDebug
