@@ -94,6 +94,7 @@ fun ClientHomeScreen(navController: NavController) {
     var cars by remember { mutableStateOf(listOf<Car>()) }
     var agencies by remember { mutableStateOf(listOf<ClientAgencyUi>()) }
     var reservations by remember { mutableStateOf(listOf<ClientReservationUi>()) }
+    var acceptedReservationsForAllCars by remember { mutableStateOf(listOf<ClientReservationUi>()) }
     var favoriteIds by remember { mutableStateOf(setOf<String>()) }
 
     var search by remember { mutableStateOf("") }
@@ -200,6 +201,32 @@ fun ClientHomeScreen(navController: NavController) {
             }
             .addOnFailureListener {
                 message = "Erreur chargement réservations : ${it.message}"
+            }
+
+        db.collection("reservations")
+            .whereEqualTo("status", "accepted")
+            .get()
+            .addOnSuccessListener { result ->
+                acceptedReservationsForAllCars = result.documents.map { doc ->
+                    ClientReservationUi(
+                        id = doc.id,
+                        carId = doc.getString("carId") ?: "",
+                        agencyId = doc.getString("agencyId") ?: "",
+                        carName = doc.getString("carName") ?: "",
+                        agencyName = doc.getString("agencyName") ?: "",
+                        startDateText = doc.getString("startDateText") ?: "",
+                        endDateText = doc.getString("endDateText") ?: "",
+                        startDateMillis = doc.getLong("startDateMillis") ?: 0L,
+                        endDateMillis = doc.getLong("endDateMillis") ?: 0L,
+                        totalDays = (doc.getLong("totalDays") ?: 0L).toInt(),
+                        totalPrice = doc.getDouble("totalPrice") ?: 0.0,
+                        status = doc.getString("status") ?: "accepted",
+                        reviewed = doc.getBoolean("reviewed") ?: false
+                    )
+                }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement disponibilités : ${it.message}"
             }
     }
 
@@ -495,7 +522,15 @@ fun ClientHomeScreen(navController: NavController) {
                     fullName = fullName,
                     selectedCity = visibleCity,
                     profileImageUrl = profileImageUrl,
-                    cars = cityFilteredCars.filter { it.available && it.status == "available" },
+                    cars = cityFilteredCars.filter { car ->
+                        car.available &&
+                                car.status != "maintenance" &&
+                                car.status != "disabled" &&
+                                !isCarReservedToday(
+                                    carId = car.id,
+                                    acceptedReservations = acceptedReservationsForAllCars
+                                )
+                    },
                     agencies = cityFilteredAgencies,
                     search = search,
                     filters = filters,
@@ -514,7 +549,16 @@ fun ClientHomeScreen(navController: NavController) {
                 )
 
                 "favorites" -> ClientFavoritesTab(
-                    cars = cars.filter { favoriteIds.contains(it.id) },
+                    cars = cars.filter { car ->
+                        favoriteIds.contains(car.id) &&
+                                car.available &&
+                                car.status != "maintenance" &&
+                                car.status != "disabled" &&
+                                !isCarReservedToday(
+                                    carId = car.id,
+                                    acceptedReservations = acceptedReservationsForAllCars
+                                )
+                    },
                     favoriteIds = favoriteIds,
                     onToggleFavorite = { toggleFavorite(it) },
                     onReserveClick = { selectedCarForReservation = it },
@@ -585,8 +629,15 @@ fun ClientHomeScreen(navController: NavController) {
     }
 
     selectedAgencyForDetails?.let { agency ->
-        val fleet = cars.filter {
-            it.agencyId == agency.id || it.agencyId == agency.ownerId
+        val fleet = cars.filter { car ->
+            (car.agencyId == agency.id || car.agencyId == agency.ownerId) &&
+                    car.available &&
+                    car.status != "maintenance" &&
+                    car.status != "disabled" &&
+                    !isCarReservedToday(
+                        carId = car.id,
+                        acceptedReservations = acceptedReservationsForAllCars
+                    )
         }
 
         AgencyDetailsDialog(
@@ -1882,6 +1933,29 @@ fun ClientReservationsTab(
     onCancelReservation: (ClientReservationUi) -> Unit,
     onReviewReservation: (ClientReservationUi) -> Unit
 ) {
+    var showHistory by remember { mutableStateOf(false) }
+
+    val today = todayStartMillis()
+
+    val currentAndFutureReservations = reservations
+        .filter { reservation ->
+            reservation.endDateMillis >= today
+        }
+        .sortedWith(
+            compareBy<ClientReservationUi> { it.startDateMillis }
+                .thenBy { it.endDateMillis }
+        )
+
+    val oldReservations = reservations
+        .filter { reservation ->
+            reservation.endDateMillis > 0L && reservation.endDateMillis < today
+        }
+        .sortedByDescending { it.endDateMillis }
+
+    val currentPendingCount = currentAndFutureReservations.count { it.status == "pending" }
+    val currentAcceptedCount = currentAndFutureReservations.count { it.status == "accepted" }
+    val currentRefusedCount = currentAndFutureReservations.count { it.status == "refused" }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1894,96 +1968,204 @@ fun ClientReservationsTab(
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
+
+            Text(
+                text = "Réservations en cours et prochaines",
+                color = Color.Gray
+            )
         }
 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ReservationMiniCard("En attente", pendingCount.toString(), Modifier.weight(1f))
-                ReservationMiniCard("Validées", acceptedCount.toString(), Modifier.weight(1f))
-                ReservationMiniCard("Refusées", refusedCount.toString(), Modifier.weight(1f))
+                ReservationMiniCard("En attente", currentPendingCount.toString(), Modifier.weight(1f))
+                ReservationMiniCard("Validées", currentAcceptedCount.toString(), Modifier.weight(1f))
+                ReservationMiniCard("Refusées", currentRefusedCount.toString(), Modifier.weight(1f))
             }
         }
 
-        if (reservations.isEmpty()) {
+        item {
+            OutlinedButton(
+                onClick = { showHistory = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("Historique des réservations (${oldReservations.size})")
+            }
+        }
+
+        if (currentAndFutureReservations.isEmpty()) {
             item {
-                EmptyClientCard("Aucune réservation pour le moment.")
+                EmptyClientCard("Aucune réservation en cours ou prochaine.")
             }
         } else {
-            items(reservations) { reservation ->
+            items(currentAndFutureReservations) { reservation ->
                 val car = cars.firstOrNull { it.id == reservation.carId }
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(5.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
+                ClientReservationCard(
+                    reservation = reservation,
+                    car = car,
+                    isHistory = false,
+                    onCancelReservation = { onCancelReservation(reservation) },
+                    onReviewReservation = { onReviewReservation(reservation) }
+                )
+            }
+        }
+    }
+
+    if (showHistory) {
+        ReservationHistoryDialog(
+            reservations = oldReservations,
+            cars = cars,
+            onDismiss = { showHistory = false },
+            onReviewReservation = onReviewReservation
+        )
+    }
+}
+
+@Composable
+fun ReservationHistoryDialog(
+    reservations: List<ClientReservationUi>,
+    cars: List<Car>,
+    onDismiss: () -> Unit,
+    onReviewReservation: (ClientReservationUi) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Historique des réservations") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (reservations.isEmpty()) {
+                    item {
                         Text(
-                            text = reservation.carName.ifBlank {
-                                car?.let { "${it.brandName} ${it.modelName}" } ?: "Voiture"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
+                            text = "Aucune ancienne réservation.",
+                            color = Color.Gray
                         )
+                    }
+                } else {
+                    items(reservations) { reservation ->
+                        val car = cars.firstOrNull { it.id == reservation.carId }
 
-                        Text("Agence : ${reservation.agencyName.ifBlank { "Agence" }}")
-                        Text("Du : ${reservation.startDateText}")
-                        Text("Au : ${reservation.endDateText}")
-                        Text("Durée : ${reservation.totalDays} jour(s)")
-                        Text("Total : ${reservation.totalPrice} DA")
-
-                        Text(
-                            text = when (reservation.status) {
-                                "pending" -> "Statut : en attente"
-                                "accepted" -> "Statut : acceptée"
-                                "refused" -> "Statut : refusée"
-                                "cancelled" -> "Statut : annulée"
-                                "finished" -> "Statut : terminée"
-                                else -> "Statut : ${reservation.status}"
-                            },
-                            fontWeight = FontWeight.Bold,
-                            color = when (reservation.status) {
-                                "accepted" -> Color(0xFF13A10E)
-                                "refused" -> Color(0xFFD13438)
-                                "cancelled" -> Color.Gray
-                                else -> Color(0xFF1DA1F2)
-                            }
+                        ClientReservationCard(
+                            reservation = reservation,
+                            car = car,
+                            isHistory = true,
+                            onCancelReservation = {},
+                            onReviewReservation = { onReviewReservation(reservation) }
                         )
-
-                        if (reservation.status == "pending") {
-                            OutlinedButton(
-                                onClick = { onCancelReservation(reservation) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Annuler la demande")
-                            }
-                        }
-
-                        if (
-                            (reservation.status == "accepted" || reservation.status == "finished")
-                            && !reservation.reviewed
-                        ) {
-                            Button(
-                                onClick = { onReviewReservation(reservation) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Noter la voiture et l’agence")
-                            }
-                        }
-
-                        if (reservation.reviewed) {
-                            Text(
-                                text = "Avis déjà envoyé.",
-                                color = Color(0xFF13A10E),
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
                     }
                 }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Fermer")
+            }
+        }
+    )
+}
+
+@Composable
+fun ClientReservationCard(
+    reservation: ClientReservationUi,
+    car: Car?,
+    isHistory: Boolean,
+    onCancelReservation: () -> Unit,
+    onReviewReservation: () -> Unit
+) {
+    val today = todayStartMillis()
+
+    val reservationStateText = when {
+        reservation.endDateMillis < today -> "Période : passée"
+        reservation.startDateMillis <= today && today <= reservation.endDateMillis -> "Période : en cours"
+        else -> "Période : prochaine"
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(5.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Text(
+                text = reservation.carName.ifBlank {
+                    car?.let { "${it.brandName} ${it.modelName}" } ?: "Voiture"
+                },
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text("Agence : ${reservation.agencyName.ifBlank { "Agence" }}")
+            Text("Du : ${reservation.startDateText}")
+            Text("Au : ${reservation.endDateText}")
+            Text("Durée : ${reservation.totalDays} jour(s)")
+            Text("Total : ${reservation.totalPrice} DA")
+
+            Text(
+                text = reservationStateText,
+                color = when {
+                    reservation.endDateMillis < today -> Color.Gray
+                    reservation.startDateMillis <= today && today <= reservation.endDateMillis -> Color(0xFFD13438)
+                    else -> Color(0xFF1DA1F2)
+                },
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = when (reservation.status) {
+                    "pending" -> "Statut : en attente"
+                    "accepted" -> "Statut : acceptée"
+                    "refused" -> "Statut : refusée"
+                    "cancelled" -> "Statut : annulée"
+                    "finished" -> "Statut : terminée"
+                    else -> "Statut : ${reservation.status}"
+                },
+                fontWeight = FontWeight.Bold,
+                color = when (reservation.status) {
+                    "accepted" -> Color(0xFF13A10E)
+                    "refused" -> Color(0xFFD13438)
+                    "cancelled" -> Color.Gray
+                    else -> Color(0xFF1DA1F2)
+                }
+            )
+
+            if (!isHistory && reservation.status == "pending") {
+                OutlinedButton(
+                    onClick = onCancelReservation,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Annuler la demande")
+                }
+            }
+
+            if (
+                (reservation.status == "accepted" || reservation.status == "finished")
+                && !reservation.reviewed
+            ) {
+                Button(
+                    onClick = onReviewReservation,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+                ) {
+                    Text("Noter la voiture et l’agence")
+                }
+            }
+
+            if (reservation.reviewed) {
+                Text(
+                    text = "Avis déjà envoyé.",
+                    color = Color(0xFF13A10E),
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -2292,6 +2474,30 @@ fun dateRangesOverlap(
     end2: Long
 ): Boolean {
     return start1 <= end2 && start2 <= end1
+}
+
+
+fun todayStartMillis(): Long {
+    val calendar = Calendar.getInstance()
+    calendar.set(Calendar.HOUR_OF_DAY, 0)
+    calendar.set(Calendar.MINUTE, 0)
+    calendar.set(Calendar.SECOND, 0)
+    calendar.set(Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
+}
+
+fun isCarReservedToday(
+    carId: String,
+    acceptedReservations: List<ClientReservationUi>
+): Boolean {
+    val today = todayStartMillis()
+
+    return acceptedReservations.any { reservation ->
+        reservation.carId == carId &&
+                reservation.status == "accepted" &&
+                today >= reservation.startDateMillis &&
+                today <= reservation.endDateMillis
+    }
 }
 
 fun starsText(note: Int): String {

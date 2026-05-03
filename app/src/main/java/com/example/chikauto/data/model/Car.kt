@@ -21,5 +21,5 @@ data class Car(
     val status: String = "available", // available, maintenance, inactive
     val ratingAverage: Double = 0.0,
     val totalReviews: Int = 0,
-    val previousRentals: Int = 0
+    val previousRentals: Long = 0L
 )

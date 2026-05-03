@@ -40,5 +40,5 @@ object AppOptions {
 
     val gearboxes = listOf(
         "Manuelle",
-        "Automatique"
+        "Automatic"
     )}

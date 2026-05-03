@@ -1,26 +1,57 @@
 package com.example.chikauto.ui.agency
 
 import android.net.Uri
+import android.app.DatePickerDialog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.example.chikauto.ai.PredictionEngine
+import com.example.chikauto.ai.PredictionResult
 import com.example.chikauto.data.model.AppOptions
 import com.example.chikauto.data.model.Brand
 import com.example.chikauto.data.model.Car
@@ -31,6 +62,9 @@ import com.example.chikauto.ui.components.EditProfileDialog
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.storage.FirebaseStorage
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 
 data class AgencyReservationUi(
     val id: String = "",
@@ -58,6 +92,7 @@ fun AgencyDashboardScreen(navController: NavController) {
     val agencyId = auth.currentUser?.uid ?: ""
 
     var selectedTab by remember { mutableStateOf("dashboard") }
+    var showReservationHistory by remember { mutableStateOf(false) }
 
     var agencyName by remember { mutableStateOf("Agence") }
     var email by remember { mutableStateOf(auth.currentUser?.email ?: "") }
@@ -74,6 +109,7 @@ fun AgencyDashboardScreen(navController: NavController) {
     var message by remember { mutableStateOf("") }
 
     var carToEdit by remember { mutableStateOf<Car?>(null) }
+    var carToPlanning by remember { mutableStateOf<Car?>(null) }
     var agentToEdit by remember { mutableStateOf<MaintenanceAgent?>(null) }
     var showEditProfile by remember { mutableStateOf(false) }
 
@@ -90,6 +126,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                 agencyCity = doc.getString("city") ?: ""
                 agencyImageUrl = doc.getString("profileImageUrl") ?: ""
             }
+            .addOnFailureListener {
+                message = "Erreur chargement agence : ${it.message}"
+            }
 
         db.collection("carBrands")
             .get()
@@ -98,6 +137,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                     it.toObject(Brand::class.java)?.copy(id = it.id)
                 }
             }
+            .addOnFailureListener {
+                message = "Erreur chargement marques : ${it.message}"
+            }
 
         db.collection("carModels")
             .get()
@@ -105,6 +147,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                 models = result.documents.mapNotNull {
                     it.toObject(CarModel::class.java)?.copy(id = it.id)
                 }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement modèles : ${it.message}"
             }
 
         db.collection("cars")
@@ -115,6 +160,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                     it.toObject(Car::class.java)?.copy(id = it.id)
                 }
             }
+            .addOnFailureListener {
+                message = "Erreur chargement voitures : ${it.message}"
+            }
 
         db.collection("maintenanceAgents")
             .whereEqualTo("agencyId", agencyId)
@@ -123,6 +171,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                 agents = result.documents.mapNotNull {
                     it.toObject(MaintenanceAgent::class.java)?.copy(id = it.id)
                 }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement agents : ${it.message}"
             }
 
         db.collection("reservations")
@@ -150,6 +201,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                     )
                 }
             }
+            .addOnFailureListener {
+                message = "Erreur chargement réservations : ${it.message}"
+            }
     }
 
     fun acceptReservation(reservation: AgencyReservationUi) {
@@ -161,6 +215,7 @@ fun AgencyDashboardScreen(navController: NavController) {
                 val conflict = result.documents.any { doc ->
                     val s = doc.getLong("startDateMillis") ?: 0L
                     val e = doc.getLong("endDateMillis") ?: 0L
+
                     reservation.startDateMillis <= e && s <= reservation.endDateMillis
                 }
 
@@ -178,18 +233,22 @@ fun AgencyDashboardScreen(navController: NavController) {
                         db.runTransaction { transaction ->
                             val snapshot = transaction.get(carRef)
                             val previous = snapshot.getLong("previousRentals") ?: 0L
+
                             transaction.update(carRef, "previousRentals", previous + 1)
                         }.addOnSuccessListener {
                             message = "Réservation acceptée."
                             loadData()
                         }.addOnFailureListener {
-                            message = "Réservation acceptée, mais erreur MAJ IA : ${it.message}"
+                            message = "Réservation acceptée, mais erreur MAJ véhicule : ${it.message}"
                             loadData()
                         }
                     }
                     .addOnFailureListener {
                         message = "Erreur acceptation : ${it.message}"
                     }
+            }
+            .addOnFailureListener {
+                message = "Erreur vérification disponibilité : ${it.message}"
             }
     }
 
@@ -208,6 +267,15 @@ fun AgencyDashboardScreen(navController: NavController) {
 
     LaunchedEffect(Unit) {
         loadData()
+    }
+
+    if (showReservationHistory) {
+        ReservationHistoryScreen(
+            reservations = reservations,
+            onBack = { showReservationHistory = false },
+            onRefresh = { loadData() }
+        )
+        return
     }
 
     Box(
@@ -229,7 +297,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                     reservations = reservations,
                     message = message,
                     onAccept = { acceptReservation(it) },
-                    onRefuse = { refuseReservation(it) }
+                    onRefuse = { refuseReservation(it) },
+                    onOpenHistory = { showReservationHistory = true },
+                    onRefresh = { loadData() }
                 )
 
                 "add_car" -> AgencyAddCarTab(
@@ -247,6 +317,8 @@ fun AgencyDashboardScreen(navController: NavController) {
                 "fleet" -> AgencyFleetTab(
                     cars = cars,
                     agents = agents,
+                    reservations = reservations,
+                    onOpenPlanning = { carToPlanning = it },
                     onEditCar = { carToEdit = it },
                     onDeleteCar = { car ->
                         db.collection("cars")
@@ -302,6 +374,9 @@ fun AgencyDashboardScreen(navController: NavController) {
                                         message = "Voiture assignée à l’entretien."
                                         loadData()
                                     }
+                                    .addOnFailureListener {
+                                        message = "Erreur MAJ voiture : ${it.message}"
+                                    }
                             }
                             .addOnFailureListener {
                                 message = "Erreur entretien : ${it.message}"
@@ -355,6 +430,18 @@ fun AgencyDashboardScreen(navController: NavController) {
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+
+    carToPlanning?.let { car ->
+        CarPlanningDialog(
+            car = car,
+            reservations = reservations,
+            onDismiss = { carToPlanning = null },
+            onChanged = {
+                message = it
+                loadData()
+            }
         )
     }
 
@@ -427,20 +514,18 @@ fun AgencyDashboardTab(
     reservations: List<AgencyReservationUi>,
     message: String,
     onAccept: (AgencyReservationUi) -> Unit,
-    onRefuse: (AgencyReservationUi) -> Unit
+    onRefuse: (AgencyReservationUi) -> Unit,
+    onOpenHistory: () -> Unit,
+    onRefresh: () -> Unit
 ) {
     val availableCars = cars.count { it.available && it.status == "available" }
     val maintenanceCars = cars.count { it.status == "maintenance" }
     val pendingRequests = reservations.count { it.status == "pending" }
+    val acceptedRequests = reservations.count { it.status == "accepted" }
 
-    val sortedReservations = reservations.sortedByDescending {
-        when (it.status) {
-            "pending" -> 3
-            "accepted" -> 2
-            "refused" -> 1
-            else -> 0
-        }
-    }
+    val pendingReservations = reservations
+        .filter { it.status == "pending" }
+        .sortedByDescending { it.startDateMillis }
 
     LazyColumn(
         modifier = Modifier
@@ -460,7 +545,8 @@ fun AgencyDashboardTab(
             item {
                 Text(
                     text = message,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -507,120 +593,281 @@ fun AgencyDashboardTab(
 
                 AgencyStatCard(
                     title = "Acceptées",
-                    value = reservations.count { it.status == "accepted" }.toString(),
+                    value = acceptedRequests.toString(),
                     modifier = Modifier.weight(1f)
                 )
             }
         }
 
         item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onRefresh,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+                ) {
+                    Text("Actualiser")
+                }
+
+                OutlinedButton(
+                    onClick = onOpenHistory,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text("Historique")
+                }
+            }
+        }
+
+        item {
             Text(
-                text = "Demandes de réservation",
+                text = "Demandes de réservation en attente",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
         }
 
-        if (sortedReservations.isEmpty()) {
+        if (pendingReservations.isEmpty()) {
             item {
-                AgencyEmptyCard("Aucune demande de réservation pour le moment.")
+                AgencyEmptyCard("Aucune demande de réservation en attente.")
             }
         } else {
-            items(sortedReservations) { reservation ->
-                val car = cars.firstOrNull { it.id == reservation.carId }
+            items(pendingReservations) { reservation ->
+                ReservationRequestCard(
+                    reservation = reservation,
+                    car = cars.firstOrNull { it.id == reservation.carId },
+                    onAccept = { onAccept(reservation) },
+                    onRefuse = { onRefuse(reservation) }
+                )
+            }
+        }
+    }
+}
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(5.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            ProfileCircle(
-                                text = reservation.clientName.take(1).ifBlank { "C" },
-                                imageUrl = reservation.clientProfileImageUrl
-                            )
+@Composable
+fun ReservationRequestCard(
+    reservation: AgencyReservationUi,
+    car: Car?,
+    onAccept: () -> Unit,
+    onRefuse: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(5.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ProfileCircle(
+                    text = reservation.clientName.take(1).ifBlank { "C" },
+                    imageUrl = reservation.clientProfileImageUrl
+                )
 
-                            Column {
-                                Text(
-                                    text = reservation.clientName.ifBlank { "Client" },
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
+                Column {
+                    Text(
+                        text = reservation.clientName.ifBlank { "Client" },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
 
-                                Text("Tél : ${reservation.clientPhone}")
-                                Text("Email : ${reservation.clientEmail}")
-                            }
-                        }
-
-                        if (reservation.carImageUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = reservation.carImageUrl,
-                                contentDescription = "Voiture réservée",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp)
-                                    .clip(RoundedCornerShape(18.dp)),
-                                contentScale = ContentScale.Crop
-                            )
-                        }
-
-                        Text(
-                            text = "Voiture : ${
-                                reservation.carName.ifBlank {
-                                    car?.let { "${it.brandName} ${it.modelName}" } ?: "Voiture"
-                                }
-                            }"
-                        )
-
-                        Text("Du : ${reservation.startDateText}")
-                        Text("Au : ${reservation.endDateText}")
-                        Text("Durée : ${reservation.totalDays} jour(s)")
-                        Text("Total : ${reservation.totalPrice} DA")
-
-                        Text(
-                            text = when (reservation.status) {
-                                "pending" -> "Statut : en attente"
-                                "accepted" -> "Statut : acceptée"
-                                "refused" -> "Statut : refusée"
-                                "cancelled" -> "Statut : annulée"
-                                else -> "Statut : ${reservation.status}"
-                            },
-                            color = when (reservation.status) {
-                                "accepted" -> Color(0xFF13A10E)
-                                "refused" -> Color(0xFFD13438)
-                                else -> Color(0xFF1DA1F2)
-                            },
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        if (reservation.status == "pending") {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { onAccept(reservation) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Accepter")
-                                }
-
-                                OutlinedButton(
-                                    onClick = { onRefuse(reservation) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Refuser")
-                                }
-                            }
-                        }
-                    }
+                    Text("Tél : ${reservation.clientPhone.ifBlank { "Non précisé" }}")
+                    Text("Email : ${reservation.clientEmail.ifBlank { "Non précisé" }}")
                 }
             }
+
+            if (reservation.carImageUrl.isNotBlank()) {
+                AsyncImage(
+                    model = reservation.carImageUrl,
+                    contentDescription = "Voiture réservée",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp)
+                        .clip(RoundedCornerShape(18.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            }
+
+            Text(
+                text = "Voiture : ${
+                    reservation.carName.ifBlank {
+                        car?.let { "${it.brandName} ${it.modelName}" } ?: "Voiture"
+                    }
+                }"
+            )
+
+            Text("Du : ${reservation.startDateText}")
+            Text("Au : ${reservation.endDateText}")
+            Text("Durée : ${reservation.totalDays} jour(s)")
+            Text("Total : ${reservation.totalPrice} DA")
+
+            Text(
+                text = "Statut : en attente",
+                color = Color(0xFF1DA1F2),
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onAccept,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF13A10E)),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Accepter")
+                }
+
+                OutlinedButton(
+                    onClick = onRefuse,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Refuser")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReservationHistoryScreen(
+    reservations: List<AgencyReservationUi>,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val history = reservations
+        .filter { it.status != "pending" }
+        .sortedByDescending { it.startDateMillis }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF4F6F8))
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = onBack,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+                ) {
+                    Text("← Retour")
+                }
+
+                OutlinedButton(
+                    onClick = onRefresh,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Actualiser")
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "Historique des réservations",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Réservations acceptées, refusées ou annulées",
+                color = Color.Gray
+            )
+        }
+
+        if (history.isEmpty()) {
+            item {
+                AgencyEmptyCard("Aucune réservation dans l’historique.")
+            }
+        } else {
+            items(history) { reservation ->
+                ReservationHistoryCard(reservation = reservation)
+            }
+        }
+    }
+}
+
+@Composable
+fun ReservationHistoryCard(
+    reservation: AgencyReservationUi
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(5.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ProfileCircle(
+                    text = reservation.clientName.take(1).ifBlank { "C" },
+                    imageUrl = reservation.clientProfileImageUrl
+                )
+
+                Column {
+                    Text(
+                        text = reservation.clientName.ifBlank { "Client" },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text("Tél : ${reservation.clientPhone.ifBlank { "Non précisé" }}")
+                    Text("Email : ${reservation.clientEmail.ifBlank { "Non précisé" }}")
+                }
+            }
+
+            if (reservation.carImageUrl.isNotBlank()) {
+                AsyncImage(
+                    model = reservation.carImageUrl,
+                    contentDescription = "Voiture",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp)
+                        .clip(RoundedCornerShape(18.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            }
+
+            Text("Voiture : ${reservation.carName.ifBlank { "Voiture" }}")
+            Text("Du : ${reservation.startDateText}")
+            Text("Au : ${reservation.endDateText}")
+            Text("Durée : ${reservation.totalDays} jour(s)")
+            Text("Total : ${reservation.totalPrice} DA")
+
+            Text(
+                text = when (reservation.status) {
+                    "accepted" -> "Statut : acceptée"
+                    "refused" -> "Statut : refusée"
+                    "cancelled" -> "Statut : annulée"
+                    else -> "Statut : ${reservation.status}"
+                },
+                color = when (reservation.status) {
+                    "accepted" -> Color(0xFF13A10E)
+                    "refused" -> Color(0xFFD13438)
+                    "cancelled" -> Color.Gray
+                    else -> Color(0xFF1DA1F2)
+                },
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -684,8 +931,8 @@ fun AgencyAddCarTab(
             "available" to true,
             "status" to "available",
             "ratingAverage" to 0.0,
-            "totalReviews" to 0,
-            "previousRentals" to 0
+            "totalReviews" to 0L,
+            "previousRentals" to 0L
         )
 
         db.collection("cars")
@@ -720,11 +967,13 @@ fun AgencyAddCarTab(
                         createCar(downloadUri.toString())
                     }
                     .addOnFailureListener {
-                        createCar("")
+                        loading = false
+                        message = "Erreur récupération photo : ${it.message}"
                     }
             }
             .addOnFailureListener {
-                createCar("")
+                loading = false
+                message = "Erreur upload photo : ${it.message}"
             }
     }
 
@@ -746,7 +995,8 @@ fun AgencyAddCarTab(
             item {
                 Text(
                     text = message,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -755,7 +1005,8 @@ fun AgencyAddCarTab(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(5.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -823,26 +1074,30 @@ fun AgencyAddCarTab(
                         value = year,
                         onValueChange = { year = it },
                         label = { Text("Année") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedTextField(
                         value = price,
                         onValueChange = { price = it },
                         label = { Text("Prix par jour en DA") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedTextField(
                         value = mileage,
                         onValueChange = { mileage = it },
                         label = { Text("Kilométrage") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedButton(
                         onClick = { imagePicker.launch("image/*") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
                         Text("Choisir une photo du véhicule")
                     }
@@ -880,6 +1135,7 @@ fun AgencyAddCarTab(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !loading,
+                        shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF1DA1F2)
                         )
@@ -896,6 +1152,8 @@ fun AgencyAddCarTab(
 fun AgencyFleetTab(
     cars: List<Car>,
     agents: List<MaintenanceAgent>,
+    reservations: List<AgencyReservationUi>,
+    onOpenPlanning: (Car) -> Unit,
     onEditCar: (Car) -> Unit,
     onDeleteCar: (Car) -> Unit,
     onMakeAvailable: (Car) -> Unit,
@@ -912,7 +1170,7 @@ fun AgencyFleetTab(
         item {
             AgencyHeader(
                 title = "Ma flotte",
-                subtitle = "Gestion des véhicules",
+                subtitle = "Gestion des véhicules et prédiction IA",
                 imageUrl = ""
             )
         }
@@ -923,17 +1181,35 @@ fun AgencyFleetTab(
             }
         } else {
             items(cars) { car ->
+                val acceptedCount = reservations.count {
+                    it.carId == car.id && it.status == "accepted"
+                }
+
+                val refusedCount = reservations.count {
+                    it.carId == car.id && it.status == "refused"
+                }
+
                 val prediction = PredictionEngine.predictCarDemand(
-                    previousRentals = car.previousRentals,
+                    previousRentals = car.previousRentals.toLong(),
                     pricePerDay = car.pricePerDay,
                     ratingAverage = car.ratingAverage,
-                    availableDays = 25
+                    availableDays = 25,
+                    mileage = car.mileage,
+                    year = car.year,
+                    acceptedReservations = acceptedCount,
+                    refusedReservations = refusedCount,
+                    city = car.city,
+                    fuel = car.fuel,
+                    gearbox = car.gearbox,
+                    carType = car.type
                 )
 
                 val selectedAgentName = selectedAgents[car.id] ?: ""
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenPlanning(car) },
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = Color.White),
                     elevation = CardDefaults.cardElevation(5.dp)
@@ -977,23 +1253,24 @@ fun AgencyFleetTab(
                         Text("Wilaya : ${car.city}")
                         Text("Prix : ${car.pricePerDay} DA / jour")
                         Text("Kilométrage : ${car.mileage} km")
+                        Text("Année : ${car.year}")
                         Text("Statut : ${car.status}")
                         Text("Disponible : ${if (car.available) "Oui" else "Non"}")
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             AssistChip(
                                 onClick = {},
-                                label = { Text(car.type) }
+                                label = { Text(car.type.ifBlank { "Type" }) }
                             )
 
                             AssistChip(
                                 onClick = {},
-                                label = { Text(car.fuel) }
+                                label = { Text(car.fuel.ifBlank { "Carburant" }) }
                             )
 
                             AssistChip(
                                 onClick = {},
-                                label = { Text(car.gearbox) }
+                                label = { Text(car.gearbox.ifBlank { "Boîte" }) }
                             )
                         }
 
@@ -1017,25 +1294,34 @@ fun AgencyFleetTab(
                                         onAssignMaintenance(car, agent)
                                     }
                                 },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF1DA1F2)
+                                )
                             ) {
                                 Text("Assigner entretien / lavage")
                             }
                         } else {
-                            Text("Ajoutez un agent pour pouvoir assigner un entretien.")
+                            Text(
+                                text = "Ajoutez un agent pour pouvoir assigner un entretien.",
+                                color = Color.Gray
+                            )
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = { onEditCar(car) },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Text("Modifier")
                             }
 
                             OutlinedButton(
                                 onClick = { onMakeAvailable(car) },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Text("Disponible")
                             }
@@ -1043,26 +1329,562 @@ fun AgencyFleetTab(
 
                         OutlinedButton(
                             onClick = { onDeleteCar(car) },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Text("Supprimer")
                         }
 
                         Divider()
 
-                        Text(
-                            text = "Prédiction IA",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF1DA1F2)
-                        )
-
-                        Text("Prévision : ${prediction.rentals} location(s) le mois prochain")
-                        Text("Niveau de demande : ${prediction.demandLevel}")
-                        Text("Conseil : ${prediction.advice}")
+                        AiPredictionCard(prediction = prediction)
                     }
                 }
             }
+        }
+    }
+}
+
+
+fun todayStartMillisAgency(): Long {
+    val calendar = java.util.Calendar.getInstance()
+    calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+    calendar.set(java.util.Calendar.MINUTE, 0)
+    calendar.set(java.util.Calendar.SECOND, 0)
+    calendar.set(java.util.Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
+}
+
+@Composable
+fun CarPlanningDialog(
+    car: Car,
+    reservations: List<AgencyReservationUi>,
+    onDismiss: () -> Unit,
+    onChanged: (String) -> Unit
+) {
+    val db = FirebaseFirestore.getInstance()
+    val today = todayStartMillisAgency()
+
+    var localMessage by remember { mutableStateOf("") }
+    var selectedReservation by remember { mutableStateOf<AgencyReservationUi?>(null) }
+    var reservationToEdit by remember { mutableStateOf<AgencyReservationUi?>(null) }
+    var reservationToDelete by remember { mutableStateOf<AgencyReservationUi?>(null) }
+
+    val activeReservations = reservations
+        .filter {
+            it.carId == car.id &&
+                    it.status == "accepted" &&
+                    it.endDateMillis >= today
+        }
+        .sortedBy { it.startDateMillis }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Programme : ${car.brandName} ${car.modelName}")
+        },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.heightIn(max = 460.dp)
+            ) {
+                item {
+                    Text(
+                        text = "Cliquez sur une ligne de réservation pour voir les détails.",
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1DA1F2)
+                    )
+                }
+
+                if (localMessage.isNotBlank()) {
+                    item {
+                        Text(
+                            text = localMessage,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                if (activeReservations.isEmpty()) {
+                    item {
+                        Text(
+                            text = "Aucune réservation active ou prochaine pour cette voiture.",
+                            color = Color.Gray
+                        )
+                    }
+                } else {
+                    items(activeReservations) { reservation ->
+                        val isNowReserved =
+                            today >= reservation.startDateMillis &&
+                                    today <= reservation.endDateMillis
+
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedReservation = reservation },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F6F8))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ProfileCircle(
+                                    text = reservation.clientName.take(1).ifBlank { "C" },
+                                    imageUrl = reservation.clientProfileImageUrl
+                                )
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = reservation.clientName.ifBlank { "Client" },
+                                        fontWeight = FontWeight.Bold
+                                    )
+
+                                    Text("Du ${reservation.startDateText} au ${reservation.endDateText}")
+
+                                    Text(
+                                        text = if (isNowReserved) {
+                                            "Réservée maintenant"
+                                        } else {
+                                            "Réservation prochaine"
+                                        },
+                                        color = if (isNowReserved) Color(0xFFD13438) else Color(0xFF1DA1F2),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                Text(
+                                    text = "Voir",
+                                    color = Color(0xFF1DA1F2),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Fermer")
+            }
+        }
+    )
+
+    selectedReservation?.let { reservation ->
+        ReservationDetailsDialog(
+            reservation = reservation,
+            today = today,
+            onDismiss = { selectedReservation = null },
+            onEdit = {
+                selectedReservation = null
+                reservationToEdit = reservation
+            },
+            onDelete = {
+                selectedReservation = null
+                reservationToDelete = reservation
+            }
+        )
+    }
+
+    reservationToDelete?.let { reservation ->
+        AlertDialog(
+            onDismissRequest = { reservationToDelete = null },
+            title = { Text("Supprimer la réservation") },
+            text = {
+                Text(
+                    "Voulez-vous vraiment supprimer la réservation de ${reservation.clientName.ifBlank { "ce client" }} du ${reservation.startDateText} au ${reservation.endDateText} ?"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        db.collection("reservations")
+                            .document(reservation.id)
+                            .delete()
+                            .addOnSuccessListener {
+                                reservationToDelete = null
+                                localMessage = "Réservation supprimée. La période est maintenant libre."
+                                onChanged("Réservation supprimée.")
+                            }
+                            .addOnFailureListener {
+                                localMessage = "Erreur suppression : ${it.message}"
+                            }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                ) {
+                    Text("Supprimer")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { reservationToDelete = null }) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
+
+    reservationToEdit?.let { reservation ->
+        EditReservationDatesDialog(
+            reservation = reservation,
+            car = car,
+            allReservations = reservations,
+            onDismiss = { reservationToEdit = null },
+            onSaved = {
+                reservationToEdit = null
+                localMessage = "Dates de réservation modifiées."
+                onChanged("Dates de réservation modifiées.")
+            }
+        )
+    }
+}
+
+@Composable
+fun ReservationDetailsDialog(
+    reservation: AgencyReservationUi,
+    today: Long,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val isNowReserved = today >= reservation.startDateMillis && today <= reservation.endDateMillis
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Détails de la réservation") },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 430.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ProfileCircle(
+                            text = reservation.clientName.take(1).ifBlank { "C" },
+                            imageUrl = reservation.clientProfileImageUrl
+                        )
+
+                        Column {
+                            Text(
+                                text = reservation.clientName.ifBlank { "Client" },
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text("Client")
+                        }
+                    }
+                }
+
+                item { Text("Téléphone : ${reservation.clientPhone.ifBlank { "Non précisé" }}") }
+                item { Text("Email : ${reservation.clientEmail.ifBlank { "Non précisé" }}") }
+                item { Text("Voiture : ${reservation.carName.ifBlank { "Voiture" }}") }
+                item { Text("Date départ : ${reservation.startDateText}") }
+                item { Text("Date fin : ${reservation.endDateText}") }
+                item { Text("Durée : ${reservation.totalDays} jour(s)") }
+                item { Text("Total : ${reservation.totalPrice} DA") }
+
+                item {
+                    Text(
+                        text = if (isNowReserved) "État : réservée maintenant" else "État : réservation prochaine",
+                        color = if (isNowReserved) Color(0xFFD13438) else Color(0xFF1DA1F2),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+                    Text(
+                        text = "Choisissez une action : modifier les dates, supprimer la réservation, ou annuler pour revenir sans changement.",
+                        color = Color.Gray
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onEdit,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+            ) {
+                Text("Modifier")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onDelete) {
+                    Text("Supprimer")
+                }
+
+                OutlinedButton(onClick = onDismiss) {
+                    Text("Annuler")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun EditReservationDatesDialog(
+    reservation: AgencyReservationUi,
+    car: Car,
+    allReservations: List<AgencyReservationUi>,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit
+) {
+    val db = FirebaseFirestore.getInstance()
+
+    var startDateText by remember { mutableStateOf(reservation.startDateText) }
+    var endDateText by remember { mutableStateOf(reservation.endDateText) }
+    var startMillis by remember { mutableStateOf(reservation.startDateMillis) }
+    var endMillis by remember { mutableStateOf(reservation.endDateMillis) }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+
+    val totalDays = calculateAgencyReservationDays(startMillis, endMillis)
+    val totalPrice = totalDays * car.pricePerDay
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Modifier les dates") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = reservation.clientName.ifBlank { "Client" },
+                    fontWeight = FontWeight.Bold
+                )
+                Text("Voiture : ${car.brandName} ${car.modelName}")
+
+                AgencyDateButton(
+                    label = "Date début",
+                    value = startDateText,
+                    onDateSelected = { text, millis ->
+                        startDateText = text
+                        startMillis = millis
+                        error = ""
+                    }
+                )
+
+                AgencyDateButton(
+                    label = "Date fin",
+                    value = endDateText,
+                    onDateSelected = { text, millis ->
+                        endDateText = text
+                        endMillis = millis
+                        error = ""
+                    }
+                )
+
+                if (totalDays > 0) {
+                    Text("Nouvelle durée : $totalDays jour(s)")
+                    Text("Nouveau total : $totalPrice DA")
+                }
+
+                if (error.isNotBlank()) {
+                    Text(error, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (startMillis <= 0L || endMillis <= 0L) {
+                        error = "Veuillez choisir les deux dates."
+                        return@Button
+                    }
+
+                    if (endMillis < startMillis) {
+                        error = "La date fin doit être après la date début."
+                        return@Button
+                    }
+
+                    if (totalDays <= 0) {
+                        error = "Durée invalide."
+                        return@Button
+                    }
+
+                    val hasConflict = allReservations.any { other ->
+                        other.id != reservation.id &&
+                                other.carId == reservation.carId &&
+                                other.status == "accepted" &&
+                                dateRangesOverlapAgency(
+                                    startMillis,
+                                    endMillis,
+                                    other.startDateMillis,
+                                    other.endDateMillis
+                                )
+                    }
+
+                    if (hasConflict) {
+                        error = "Cette voiture est déjà réservée dans cette nouvelle période."
+                        return@Button
+                    }
+
+                    loading = true
+                    error = ""
+
+                    db.collection("reservations")
+                        .document(reservation.id)
+                        .update(
+                            mapOf(
+                                "startDateMillis" to startMillis,
+                                "endDateMillis" to endMillis,
+                                "startDateText" to startDateText,
+                                "endDateText" to endDateText,
+                                "totalDays" to totalDays,
+                                "totalPrice" to totalPrice,
+                                "updatedAt" to System.currentTimeMillis()
+                            )
+                        )
+                        .addOnSuccessListener {
+                            loading = false
+                            onSaved()
+                        }
+                        .addOnFailureListener {
+                            loading = false
+                            error = "Erreur modification : ${it.message}"
+                        }
+                },
+                enabled = !loading,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+            ) {
+                Text(if (loading) "Modification..." else "Enregistrer")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Annuler")
+            }
+        }
+    )
+}
+
+@Composable
+fun AgencyDateButton(
+    label: String,
+    value: String,
+    onDateSelected: (String, Long) -> Unit
+) {
+    val context = LocalContext.current
+    val calendar = Calendar.getInstance()
+
+    OutlinedButton(
+        onClick = {
+            DatePickerDialog(
+                context,
+                { _, year, month, day ->
+                    val selectedCalendar = Calendar.getInstance()
+                    selectedCalendar.set(year, month, day, 0, 0, 0)
+                    selectedCalendar.set(Calendar.MILLISECOND, 0)
+
+                    val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.FRANCE)
+
+                    onDateSelected(
+                        formatter.format(selectedCalendar.time),
+                        selectedCalendar.timeInMillis
+                    )
+                },
+                calendar.get(Calendar.YEAR),
+                calendar.get(Calendar.MONTH),
+                calendar.get(Calendar.DAY_OF_MONTH)
+            ).show()
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Text(if (value.isBlank()) "$label 📅" else "$label : $value")
+    }
+}
+
+fun calculateAgencyReservationDays(
+    startMillis: Long,
+    endMillis: Long
+): Int {
+    if (startMillis <= 0L || endMillis <= 0L) return 0
+    if (endMillis < startMillis) return 0
+
+    val oneDay = 24 * 60 * 60 * 1000L
+    return (((endMillis - startMillis) / oneDay) + 1).toInt()
+}
+
+fun dateRangesOverlapAgency(
+    start1: Long,
+    end1: Long,
+    start2: Long,
+    end2: Long
+): Boolean {
+    return start1 <= end2 && start2 <= end1
+}
+
+@Composable
+fun AiPredictionCard(
+    prediction: PredictionResult
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFF6E8FF)
+        ),
+        elevation = CardDefaults.cardElevation(4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "✦",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = Color(0xFF9C27B0),
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Prédiction IA",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color(0xFF9C27B0),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Text(
+                text = "Ce véhicule devrait être loué environ ${prediction.rentals} fois le mois prochain.",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+
+            Text(
+                text = "Niveau de demande : ${prediction.demandLevel}",
+                color = Color(0xFF7B1FA2),
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Fiabilité : ${prediction.confidence}%",
+                color = Color.DarkGray
+            )
+
+            Text(
+                text = prediction.explanation,
+                color = Color.DarkGray
+            )
+
+            Text(
+                text = "Conseil : ${prediction.advice}",
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -1076,13 +1898,82 @@ fun AgencyAgentsTab(
     onDeleteAgent: (MaintenanceAgent) -> Unit
 ) {
     val db = FirebaseFirestore.getInstance()
+    val storage = FirebaseStorage.getInstance()
 
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var location by remember { mutableStateOf("") }
 
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var loading by remember { mutableStateOf(false) }
+
     var message by remember { mutableStateOf("") }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        selectedImageUri = uri
+    }
+
+    fun saveAgent(imageUrl: String) {
+        val data = hashMapOf(
+            "agencyId" to agencyId,
+            "firstName" to firstName.trim(),
+            "lastName" to lastName.trim(),
+            "phone" to phone.trim(),
+            "location" to location.trim(),
+            "available" to true,
+            "profileImageUrl" to imageUrl
+        )
+
+        db.collection("maintenanceAgents")
+            .add(data)
+            .addOnSuccessListener {
+                firstName = ""
+                lastName = ""
+                phone = ""
+                location = ""
+                selectedImageUri = null
+                loading = false
+                message = ""
+                onAgentAdded()
+            }
+            .addOnFailureListener {
+                loading = false
+                message = "Erreur ajout agent : ${it.message}"
+            }
+    }
+
+    fun uploadAgentImageThenSave() {
+        val uri = selectedImageUri
+
+        if (uri == null) {
+            saveAgent("")
+            return
+        }
+
+        val ref = storage.reference
+            .child("maintenance_agents")
+            .child(agencyId)
+            .child("${System.currentTimeMillis()}.jpg")
+
+        ref.putFile(uri)
+            .addOnSuccessListener {
+                ref.downloadUrl
+                    .addOnSuccessListener { downloadUri ->
+                        saveAgent(downloadUri.toString())
+                    }
+                    .addOnFailureListener {
+                        loading = false
+                        message = "Erreur récupération photo : ${it.message}"
+                    }
+            }
+            .addOnFailureListener {
+                loading = false
+                message = "Erreur upload photo : ${it.message}"
+            }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -1102,7 +1993,8 @@ fun AgencyAgentsTab(
             item {
                 Text(
                     text = message,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -1111,7 +2003,8 @@ fun AgencyAgentsTab(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(5.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -1119,28 +2012,32 @@ fun AgencyAgentsTab(
                 ) {
                     Text(
                         text = "Ajouter un agent",
-                        style = MaterialTheme.typography.titleLarge
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
                     )
 
                     OutlinedTextField(
                         value = firstName,
                         onValueChange = { firstName = it },
                         label = { Text("Prénom") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedTextField(
                         value = lastName,
                         onValueChange = { lastName = it },
                         label = { Text("Nom") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { phone = it },
                         label = { Text("Téléphone") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
 
                     OutlinedTextField(
@@ -1149,6 +2046,26 @@ fun AgencyAgentsTab(
                         label = { Text("Adresse / localisation") },
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    OutlinedButton(
+                        onClick = { imagePicker.launch("image/*") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("Choisir une photo de l’agent")
+                    }
+
+                    if (selectedImageUri != null) {
+                        AsyncImage(
+                            model = selectedImageUri,
+                            contentDescription = "Photo agent",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .clip(RoundedCornerShape(18.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
 
                     Button(
                         onClick = {
@@ -1161,32 +2078,18 @@ fun AgencyAgentsTab(
                                 return@Button
                             }
 
-                            val data = hashMapOf(
-                                "agencyId" to agencyId,
-                                "firstName" to firstName.trim(),
-                                "lastName" to lastName.trim(),
-                                "phone" to phone.trim(),
-                                "location" to location.trim(),
-                                "available" to true
-                            )
-
-                            db.collection("maintenanceAgents")
-                                .add(data)
-                                .addOnSuccessListener {
-                                    firstName = ""
-                                    lastName = ""
-                                    phone = ""
-                                    location = ""
-                                    message = ""
-                                    onAgentAdded()
-                                }
-                                .addOnFailureListener {
-                                    message = "Erreur ajout agent : ${it.message}"
-                                }
+                            loading = true
+                            message = ""
+                            uploadAgentImageThenSave()
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !loading,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF1DA1F2)
+                        )
                     ) {
-                        Text("Ajouter l’agent")
+                        Text(if (loading) "Ajout..." else "Ajouter l’agent")
                     }
                 }
             }
@@ -1195,7 +2098,8 @@ fun AgencyAgentsTab(
         item {
             Text(
                 text = "Liste des agents",
-                style = MaterialTheme.typography.titleLarge
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
             )
         }
 
@@ -1208,32 +2112,52 @@ fun AgencyAgentsTab(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "${agent.firstName} ${agent.lastName}",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleLarge
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ProfileCircle(
+                                text = agent.firstName.take(1).ifBlank { "A" },
+                                imageUrl = agent.profileImageUrl
+                            )
+
+                            Column {
+                                Text(
+                                    text = "${agent.firstName} ${agent.lastName}",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleLarge
+                                )
+
+                                Text(
+                                    text = "Agent d’entretien",
+                                    color = Color.Gray
+                                )
+                            }
+                        }
 
                         Text("Téléphone : ${agent.phone}")
-                        Text("Localisation : ${agent.location}")
+                        Text("Localisation : ${agent.location.ifBlank { "Non précisée" }}")
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = { onEditAgent(agent) },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Text("Modifier")
                             }
 
                             OutlinedButton(
                                 onClick = { onDeleteAgent(agent) },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Text("Supprimer")
                             }
@@ -1271,7 +2195,8 @@ fun AgencyProfileTab(
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White)
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(5.dp)
         ) {
             Column(
                 modifier = Modifier.padding(18.dp),
@@ -1288,28 +2213,32 @@ fun AgencyProfileTab(
                     color = Color.Gray
                 )
 
-                Text("Téléphone : $phone")
-                Text("Wilaya : $city")
+                Text("Téléphone : ${phone.ifBlank { "Non précisé" }}")
+                Text("Wilaya : ${city.ifBlank { "Non précisée" }}")
             }
         }
 
         Button(
             onClick = onEditProfile,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
         ) {
             Text("Modifier le profil")
         }
 
-        Button(
+        OutlinedButton(
             onClick = onRefresh,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
         ) {
             Text("Actualiser")
         }
 
         OutlinedButton(
             onClick = onLogout,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
         ) {
             Text("Se déconnecter")
         }
@@ -1340,6 +2269,8 @@ fun EditCarDialog(
     var mileage by remember { mutableStateOf(car.mileage.toString()) }
     var imageUrl by remember { mutableStateOf(car.imageUrl) }
 
+    var error by remember { mutableStateOf("") }
+
     val filteredModels = models.filter { it.brandId == selectedBrandId }
 
     AlertDialog(
@@ -1348,7 +2279,10 @@ fun EditCarDialog(
             Text("Modifier véhicule")
         },
         text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 430.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 item {
                     AppDropdown(
                         label = "Marque",
@@ -1423,7 +2357,8 @@ fun EditCarDialog(
                         value = year,
                         onValueChange = { year = it },
                         label = { Text("Année") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                 }
 
@@ -1432,7 +2367,8 @@ fun EditCarDialog(
                         value = price,
                         onValueChange = { price = it },
                         label = { Text("Prix / jour") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                 }
 
@@ -1441,7 +2377,8 @@ fun EditCarDialog(
                         value = mileage,
                         onValueChange = { mileage = it },
                         label = { Text("Kilométrage") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                 }
 
@@ -1453,11 +2390,36 @@ fun EditCarDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+
+                if (error.isNotEmpty()) {
+                    item {
+                        Text(error, color = Color.Red)
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
+                    val parsedYear = year.toIntOrNull()
+                    val parsedPrice = price.toDoubleOrNull()
+                    val parsedMileage = mileage.toIntOrNull()
+
+                    if (parsedYear == null) {
+                        error = "L’année doit être un nombre."
+                        return@Button
+                    }
+
+                    if (parsedPrice == null) {
+                        error = "Le prix doit être un nombre."
+                        return@Button
+                    }
+
+                    if (parsedMileage == null) {
+                        error = "Le kilométrage doit être un nombre."
+                        return@Button
+                    }
+
                     onSave(
                         mapOf(
                             "brandId" to selectedBrandId,
@@ -1468,14 +2430,15 @@ fun EditCarDialog(
                             "city" to selectedWilaya,
                             "fuel" to selectedFuel,
                             "gearbox" to selectedGearbox,
-                            "year" to (year.toIntOrNull() ?: car.year),
-                            "pricePerDay" to (price.toDoubleOrNull() ?: car.pricePerDay),
-                            "mileage" to (mileage.toIntOrNull() ?: car.mileage),
+                            "year" to parsedYear,
+                            "pricePerDay" to parsedPrice,
+                            "mileage" to parsedMileage,
                             "imageUrl" to imageUrl,
                             "imageUrls" to listOf(imageUrl).filter { it.isNotBlank() }
                         )
                     )
-                }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
             ) {
                 Text("Enregistrer")
             }
@@ -1498,6 +2461,7 @@ fun EditAgentDialog(
     var lastName by remember { mutableStateOf(agent.lastName) }
     var phone by remember { mutableStateOf(agent.phone) }
     var location by remember { mutableStateOf(agent.location) }
+    var imageUrl by remember { mutableStateOf(agent.profileImageUrl) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1510,27 +2474,37 @@ fun EditAgentDialog(
                     value = firstName,
                     onValueChange = { firstName = it },
                     label = { Text("Prénom") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
                 )
 
                 OutlinedTextField(
                     value = lastName,
                     onValueChange = { lastName = it },
                     label = { Text("Nom") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
                 )
 
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { phone = it },
                     label = { Text("Téléphone") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
                 )
 
                 OutlinedTextField(
                     value = location,
                     onValueChange = { location = it },
                     label = { Text("Localisation") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = imageUrl,
+                    onValueChange = { imageUrl = it },
+                    label = { Text("Lien photo") },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -1540,13 +2514,15 @@ fun EditAgentDialog(
                 onClick = {
                     onSave(
                         mapOf(
-                            "firstName" to firstName,
-                            "lastName" to lastName,
-                            "phone" to phone,
-                            "location" to location
+                            "firstName" to firstName.trim(),
+                            "lastName" to lastName.trim(),
+                            "phone" to phone.trim(),
+                            "location" to location.trim(),
+                            "profileImageUrl" to imageUrl.trim()
                         )
                     )
-                }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
             ) {
                 Text("Enregistrer")
             }
@@ -1612,7 +2588,7 @@ fun ProfileCircle(
             )
         } else {
             Text(
-                text = text.uppercase(),
+                text = text.uppercase().ifBlank { "?" },
                 color = Color.White,
                 fontWeight = FontWeight.Bold
             )
@@ -1629,7 +2605,8 @@ fun AgencyStatCard(
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(4.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -1652,7 +2629,8 @@ fun AgencyEmptyCard(text: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(4.dp)
     ) {
         Text(
             text = text,
@@ -1737,23 +2715,24 @@ fun AgencyBottomItem(
 ) {
     val selected = selectedTab == key
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        TextButton(
-            onClick = { onTabSelected(key) }
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = icon,
-                    color = if (selected) Color(0xFF1DA1F2) else Color.Gray,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text = label,
-                    color = if (selected) Color(0xFF1DA1F2) else Color.Gray,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable {
+            onTabSelected(key)
         }
+    ) {
+        Text(
+            text = icon,
+            color = if (selected) Color(0xFF1DA1F2) else Color.Gray,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        Text(
+            text = label,
+            color = if (selected) Color(0xFF1DA1F2) else Color.Gray,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }

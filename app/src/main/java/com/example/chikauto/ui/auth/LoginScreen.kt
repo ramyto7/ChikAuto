@@ -76,8 +76,8 @@ fun LoginScreen(navController: NavController) {
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
-                    text = "Bienvenue sur ChickAUTO",
-                    style = MaterialTheme.typography.headlineMedium
+                    text = "Bienvenue sur ChickAuto",
+                    style = MaterialTheme.typography.headlineSmall
                 )
 
                 Text(
@@ -91,9 +91,10 @@ fun LoginScreen(navController: NavController) {
                         emailOrUsername = it
                         message = ""
                     },
-                    label = { Text("Email ") },
+                    label = { Text("Email") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp)
+                    shape = RoundedCornerShape(20.dp),
+                    singleLine = true
                 )
 
                 OutlinedTextField(
@@ -105,7 +106,8 @@ fun LoginScreen(navController: NavController) {
                     label = { Text("Mot de passe") },
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp)
+                    shape = RoundedCornerShape(20.dp),
+                    singleLine = true
                 )
 
                 if (message.isNotEmpty()) {
@@ -132,7 +134,7 @@ fun LoginScreen(navController: NavController) {
                         }
 
                         if (!emailOrUsername.contains("@")) {
-                            message = "Veuillez entrer un email valide ."
+                            message = "Veuillez entrer un email valide."
                             return@Button
                         }
 
@@ -141,30 +143,73 @@ fun LoginScreen(navController: NavController) {
                         auth.signInWithEmailAndPassword(emailOrUsername.trim(), password)
                             .addOnSuccessListener {
                                 val uid = auth.currentUser?.uid ?: ""
-                                db.collection("users").document(uid).get()
+
+                                if (uid.isBlank()) {
+                                    loading = false
+                                    message = "Utilisateur introuvable."
+                                    auth.signOut()
+                                    return@addOnSuccessListener
+                                }
+
+                                db.collection("users")
+                                    .document(uid)
+                                    .get()
                                     .addOnSuccessListener { document ->
                                         loading = false
-                                        val role = document.getString("role")
-                                        val status = document.getString("status")
+
+                                        if (!document.exists()) {
+                                            message = "Compte introuvable dans la base de données."
+                                            auth.signOut()
+                                            return@addOnSuccessListener
+                                        }
+
+                                        val role = document.getString("role") ?: ""
+                                        val status = document.getString("status") ?: "active"
 
                                         when {
+                                            status == "disabled" || status == "blocked" || status == "inactive" -> {
+                                                message = "Votre compte a été désactivé par l’administrateur."
+                                                auth.signOut()
+                                            }
+
                                             role == "client" && status == "active" -> {
                                                 navController.navigate("client_home") {
                                                     popUpTo("login") { inclusive = true }
                                                 }
                                             }
+
                                             role == "agency" && status == "active" -> {
                                                 navController.navigate("agency_dashboard") {
                                                     popUpTo("login") { inclusive = true }
                                                 }
                                             }
+
                                             role == "agency" && status == "pending" -> {
                                                 message = "Votre compte agence est en attente de validation."
+                                                auth.signOut()
                                             }
+
+                                            role == "agency" && status == "refused" -> {
+                                                message = "Votre demande agence a été refusée."
+                                                auth.signOut()
+                                            }
+
+                                            role == "admin" && status == "active" -> {
+                                                navController.navigate("admin_dashboard") {
+                                                    popUpTo("login") { inclusive = true }
+                                                }
+                                            }
+
                                             else -> {
-                                                message = "Compte invalide."
+                                                message = "Compte invalide ou non autorisé."
+                                                auth.signOut()
                                             }
                                         }
+                                    }
+                                    .addOnFailureListener {
+                                        loading = false
+                                        message = "Erreur vérification compte : ${it.message}"
+                                        auth.signOut()
                                     }
                             }
                             .addOnFailureListener {
@@ -175,6 +220,7 @@ fun LoginScreen(navController: NavController) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp),
+                    enabled = !loading,
                     shape = RoundedCornerShape(24.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
@@ -186,7 +232,7 @@ fun LoginScreen(navController: NavController) {
                 TextButton(
                     onClick = { navController.navigate("register") }
                 ) {
-                    Text("Vous n’avez pas de compte ? S’inscrire !")
+                    Text("Vous n’avez pas de compte ? S’inscrire")
                 }
             }
         }

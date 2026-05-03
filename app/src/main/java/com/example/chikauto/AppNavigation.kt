@@ -9,14 +9,14 @@ import com.example.chikauto.ui.agency.AgencyDashboardScreen
 import com.example.chikauto.ui.auth.LoginScreen
 import com.example.chikauto.ui.auth.RegisterScreen
 import com.example.chikauto.ui.client.ClientHomeScreen
-
+import com.example.chikauto.ui.auth.SplashScreen
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
 
     NavHost(
         navController = navController,
-        startDestination = "login"
+        startDestination = "splash"
     ) {
         composable("login") {
             LoginScreen(navController)
@@ -36,6 +36,9 @@ fun AppNavigation() {
 
         composable("admin_dashboard") {
             AdminDashboardScreen(navController)
+        }
+        composable("splash") {
+            SplashScreen(navController)
         }
     }
 }

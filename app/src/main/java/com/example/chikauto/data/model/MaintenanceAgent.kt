@@ -7,5 +7,6 @@ data class MaintenanceAgent(
     val lastName: String = "",
     val phone: String = "",
     val location: String = "",
-    val available: Boolean = true
+    val available: Boolean = true,
+    val profileImageUrl: String = ""
 )
