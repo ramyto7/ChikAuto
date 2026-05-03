@@ -24,7 +24,7 @@ class ReviewFunctionsTest {
     fun starsText_five_returnsFiveFullStars() {
         val result = starsText(5)
 
-        assertEquals("★★★★★", result)
+         assertEquals("★★★★★", result)
     }
 
     @Test
