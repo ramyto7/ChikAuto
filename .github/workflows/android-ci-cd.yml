@@ -45,3 +45,15 @@ jobs:
         with:
           name: ChikAuto-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+  security-secrets:
+    name: DevSecOps - Scan secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scanner les secrets avec Gitleaks
+        uses: gitleaks/gitleaks-action@v2
