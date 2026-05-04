@@ -1,6 +1,7 @@
 package com.example.chikauto.ui.agency
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import android.app.DatePickerDialog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -85,6 +86,27 @@ data class AgencyReservationUi(
     val status: String = "pending"
 )
 
+data class AgencyConversationUi(
+    val id: String = "",
+    val clientId: String = "",
+    val clientName: String = "",
+    val agencyId: String = "",
+    val agencyName: String = "",
+    val carId: String = "",
+    val carName: String = "",
+    val lastMessage: String = "",
+    val updatedAt: Long = 0L,
+    val unreadForAgency: Long = 0L
+)
+
+data class AgencyChatMessageUi(
+    val id: String = "",
+    val senderId: String = "",
+    val senderRole: String = "",
+    val text: String = "",
+    val createdAt: Long = 0L
+)
+
 @Composable
 fun AgencyDashboardScreen(navController: NavController) {
     val auth = FirebaseAuth.getInstance()
@@ -105,6 +127,9 @@ fun AgencyDashboardScreen(navController: NavController) {
     var cars by remember { mutableStateOf(listOf<Car>()) }
     var agents by remember { mutableStateOf(listOf<MaintenanceAgent>()) }
     var reservations by remember { mutableStateOf(listOf<AgencyReservationUi>()) }
+    var conversations by remember { mutableStateOf(listOf<AgencyConversationUi>()) }
+    var selectedConversation by remember { mutableStateOf<AgencyConversationUi?>(null) }
+    var openMessages by remember { mutableStateOf(false) }
 
     var message by remember { mutableStateOf("") }
 
@@ -112,6 +137,7 @@ fun AgencyDashboardScreen(navController: NavController) {
     var carToPlanning by remember { mutableStateOf<Car?>(null) }
     var agentToEdit by remember { mutableStateOf<MaintenanceAgent?>(null) }
     var showEditProfile by remember { mutableStateOf(false) }
+    var conflictReservation by remember { mutableStateOf<AgencyReservationUi?>(null) }
 
     fun loadData() {
         if (agencyId.isBlank()) return
@@ -204,6 +230,29 @@ fun AgencyDashboardScreen(navController: NavController) {
             .addOnFailureListener {
                 message = "Erreur chargement réservations : ${it.message}"
             }
+
+        db.collection("conversations")
+            .whereEqualTo("agencyId", agencyId)
+            .get()
+            .addOnSuccessListener { result ->
+                conversations = result.documents.map { doc ->
+                    AgencyConversationUi(
+                        id = doc.id,
+                        clientId = doc.getString("clientId") ?: "",
+                        clientName = doc.getString("clientName") ?: "Client",
+                        agencyId = doc.getString("agencyId") ?: "",
+                        agencyName = doc.getString("agencyName") ?: agencyName,
+                        carId = doc.getString("carId") ?: "",
+                        carName = doc.getString("carName") ?: "",
+                        lastMessage = doc.getString("lastMessage") ?: "",
+                        updatedAt = doc.getLong("updatedAt") ?: 0L,
+                        unreadForAgency = doc.getLong("unreadForAgency") ?: 0L
+                    )
+                }.sortedByDescending { it.updatedAt }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement messagerie : ${it.message}"
+            }
     }
 
     fun acceptReservation(reservation: AgencyReservationUi) {
@@ -213,14 +262,15 @@ fun AgencyDashboardScreen(navController: NavController) {
             .get()
             .addOnSuccessListener { result ->
                 val conflict = result.documents.any { doc ->
+                    if (doc.id == reservation.id) return@any false
                     val s = doc.getLong("startDateMillis") ?: 0L
                     val e = doc.getLong("endDateMillis") ?: 0L
-
                     reservation.startDateMillis <= e && s <= reservation.endDateMillis
                 }
 
                 if (conflict) {
-                    message = "Cette voiture est déjà réservée dans cette période."
+                    conflictReservation = reservation
+                    message = "Vous ne pouvez pas accepter cette demande : la voiture a été réservée dans ces dates."
                     return@addOnSuccessListener
                 }
 
@@ -265,8 +315,74 @@ fun AgencyDashboardScreen(navController: NavController) {
             }
     }
 
+    fun openConversationFromReservation(reservation: AgencyReservationUi) {
+        db.collection("conversations")
+            .whereEqualTo("agencyId", agencyId)
+            .whereEqualTo("clientId", reservation.clientId)
+            .whereEqualTo("carId", reservation.carId)
+            .get()
+            .addOnSuccessListener { result ->
+                val existing = result.documents.firstOrNull()
+                if (existing != null) {
+                    selectedConversation = AgencyConversationUi(
+                        id = existing.id,
+                        clientId = existing.getString("clientId") ?: reservation.clientId,
+                        clientName = existing.getString("clientName") ?: reservation.clientName,
+                        agencyId = agencyId,
+                        agencyName = agencyName,
+                        carId = existing.getString("carId") ?: reservation.carId,
+                        carName = existing.getString("carName") ?: reservation.carName,
+                        lastMessage = existing.getString("lastMessage") ?: "",
+                        updatedAt = existing.getLong("updatedAt") ?: 0L,
+                        unreadForAgency = existing.getLong("unreadForAgency") ?: 0L
+                    )
+                    openMessages = true
+                } else {
+                    val ref = db.collection("conversations").document()
+                    val data = hashMapOf(
+                        "clientId" to reservation.clientId,
+                        "clientName" to reservation.clientName,
+                        "agencyId" to agencyId,
+                        "agencyName" to agencyName,
+                        "carId" to reservation.carId,
+                        "carName" to reservation.carName,
+                        "lastMessage" to "",
+                        "updatedAt" to System.currentTimeMillis(),
+                        "unreadForClient" to 0L,
+                        "unreadForAgency" to 0L
+                    )
+                    ref.set(data).addOnSuccessListener {
+                        selectedConversation = AgencyConversationUi(
+                            id = ref.id, clientId = reservation.clientId, clientName = reservation.clientName,
+                            agencyId = agencyId, agencyName = agencyName, carId = reservation.carId, carName = reservation.carName
+                        )
+                        openMessages = true
+                        loadData()
+                    }
+                }
+            }
+            .addOnFailureListener { message = "Erreur ouverture message : ${it.message}" }
+    }
+
     LaunchedEffect(Unit) {
         loadData()
+    }
+
+    if (openMessages) {
+        AgencyMessagesScreen(
+            agencyId = agencyId,
+            agencyName = agencyName,
+            conversations = conversations,
+            selectedConversation = selectedConversation,
+            onBack = {
+                selectedConversation = null
+                openMessages = false
+                loadData()
+            },
+            onSelectConversation = { selectedConversation = it },
+            onRefresh = { loadData() }
+        )
+        return
     }
 
     if (showReservationHistory) {
@@ -298,7 +414,10 @@ fun AgencyDashboardScreen(navController: NavController) {
                     message = message,
                     onAccept = { acceptReservation(it) },
                     onRefuse = { refuseReservation(it) },
+                    onMessage = { openConversationFromReservation(it) },
                     onOpenHistory = { showReservationHistory = true },
+                    onOpenMessages = { openMessages = true },
+                    unreadMessagesCount = conversations.sumOf { it.unreadForAgency }.toInt(),
                     onRefresh = { loadData() }
                 )
 
@@ -503,6 +622,47 @@ fun AgencyDashboardScreen(navController: NavController) {
             }
         )
     }
+
+    conflictReservation?.let { reservation ->
+        AlertDialog(
+            onDismissRequest = { conflictReservation = null },
+            title = { Text("Conflit de réservation") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Vous ne pouvez pas accepter cette demande.")
+                    Text("La voiture ${reservation.carName.ifBlank { "sélectionnée" }} est déjà réservée dans ces dates.")
+                    Text("Période demandée : du ${reservation.startDateText} au ${reservation.endDateText}")
+                    Text("Vous pouvez envoyer un message au client pour proposer d’autres dates, ou refuser la demande.")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        conflictReservation = null
+                        openConversationFromReservation(reservation)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+                ) {
+                    Text("Message")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { conflictReservation = null }) {
+                        Text("Annuler")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            conflictReservation = null
+                            refuseReservation(reservation)
+                        }
+                    ) {
+                        Text("Refuser")
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -515,7 +675,10 @@ fun AgencyDashboardTab(
     message: String,
     onAccept: (AgencyReservationUi) -> Unit,
     onRefuse: (AgencyReservationUi) -> Unit,
+    onMessage: (AgencyReservationUi) -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenMessages: () -> Unit,
+    unreadMessagesCount: Int,
     onRefresh: () -> Unit
 ) {
     val availableCars = cars.count { it.available && it.status == "available" }
@@ -600,25 +763,36 @@ fun AgencyDashboardTab(
         }
 
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onRefresh,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Actualiser")
+                    Button(
+                        onClick = onRefresh,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))
+                    ) {
+                        Text("Actualiser")
+                    }
+
+                    OutlinedButton(
+                        onClick = onOpenHistory,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text("Historique")
+                    }
                 }
 
-                OutlinedButton(
-                    onClick = onOpenHistory,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(18.dp)
+                Button(
+                    onClick = onOpenMessages,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF24292F))
                 ) {
-                    Text("Historique")
+                    Text(if (unreadMessagesCount > 0) "✉ Messagerie • $unreadMessagesCount" else "✉ Messagerie")
                 }
             }
         }
@@ -641,7 +815,8 @@ fun AgencyDashboardTab(
                     reservation = reservation,
                     car = cars.firstOrNull { it.id == reservation.carId },
                     onAccept = { onAccept(reservation) },
-                    onRefuse = { onRefuse(reservation) }
+                    onRefuse = { onRefuse(reservation) },
+                    onMessage = { onMessage(reservation) }
                 )
             }
         }
@@ -653,7 +828,8 @@ fun ReservationRequestCard(
     reservation: AgencyReservationUi,
     car: Car?,
     onAccept: () -> Unit,
-    onRefuse: () -> Unit
+    onRefuse: () -> Unit,
+    onMessage: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -734,6 +910,14 @@ fun ReservationRequestCard(
                 ) {
                     Text("Refuser")
                 }
+            }
+
+            OutlinedButton(
+                onClick = onMessage,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Text("Message")
             }
         }
     }
@@ -1250,12 +1434,42 @@ fun AgencyFleetTab(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Text("Wilaya : ${car.city}")
-                        Text("Prix : ${car.pricePerDay} DA / jour")
-                        Text("Kilométrage : ${car.mileage} km")
-                        Text("Année : ${car.year}")
-                        Text("Statut : ${car.status}")
-                        Text("Disponible : ${if (car.available) "Oui" else "Non"}")
+
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Wilaya : ${car.city}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text = "Prix : ${car.pricePerDay} DA / jour",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text = "Kilométrage : ${car.mileage} km",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text = "Année : ${car.year}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text = "Statut : ${car.status}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text = "Disponible : ${if (car.available) "Oui" else "Non"}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             AssistChip(
@@ -1295,7 +1509,7 @@ fun AgencyFleetTab(
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(16.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = Color(0xFF1DA1F2)
                                 )
@@ -1309,7 +1523,7 @@ fun AgencyFleetTab(
                             )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(
                                 onClick = { onEditCar(car) },
                                 modifier = Modifier.weight(1f),
@@ -1321,7 +1535,7 @@ fun AgencyFleetTab(
                             OutlinedButton(
                                 onClick = { onMakeAvailable(car) },
                                 modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp)
+                                shape = RoundedCornerShape(11.dp)
                             ) {
                                 Text("Disponible")
                             }
@@ -1330,7 +1544,7 @@ fun AgencyFleetTab(
                         OutlinedButton(
                             onClick = { onDeleteCar(car) },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(11.dp)
                         ) {
                             Text("Supprimer")
                         }
@@ -1828,67 +2042,70 @@ fun AiPredictionCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color(0xFFF6E8FF)
         ),
-        elevation = CardDefaults.cardElevation(4.dp)
+        elevation = CardDefaults.cardElevation(3.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "✦",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     color = Color(0xFF9C27B0),
                     fontWeight = FontWeight.Bold
                 )
 
                 Text(
                     text = "Prédiction IA",
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFF9C27B0),
                     fontWeight = FontWeight.Bold
                 )
             }
 
             Text(
-                text = "Ce véhicule devrait être loué environ ${prediction.rentals} fois le mois prochain.",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Environ ${prediction.rentals} location(s) le mois prochain.",
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium
             )
 
             Text(
-                text = "Niveau de demande : ${prediction.demandLevel}",
+                text = "Demande : ${prediction.demandLevel}",
+                style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF7B1FA2),
                 fontWeight = FontWeight.Bold
             )
 
             Text(
                 text = "Fiabilité : ${prediction.confidence}%",
+                style = MaterialTheme.typography.bodySmall,
                 color = Color.DarkGray
             )
 
             Text(
                 text = prediction.explanation,
+                style = MaterialTheme.typography.labelSmall,
                 color = Color.DarkGray
             )
 
             Text(
                 text = "Conseil : ${prediction.advice}",
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold
             )
         }
     }
 }
-
 @Composable
 fun AgencyAgentsTab(
     agencyId: String,
@@ -2637,6 +2854,142 @@ fun AgencyEmptyCard(text: String) {
             modifier = Modifier.padding(18.dp),
             color = Color.Gray
         )
+    }
+}
+
+
+@Composable
+fun AgencyMessagesScreen(
+    agencyId: String,
+    agencyName: String,
+    conversations: List<AgencyConversationUi>,
+    selectedConversation: AgencyConversationUi?,
+    onBack: () -> Unit,
+    onSelectConversation: (AgencyConversationUi?) -> Unit,
+    onRefresh: () -> Unit
+) {
+    val db = FirebaseFirestore.getInstance()
+    var messages by remember(selectedConversation?.id) { mutableStateOf(listOf<AgencyChatMessageUi>()) }
+    var text by remember(selectedConversation?.id) { mutableStateOf("") }
+    var localMessage by remember { mutableStateOf("") }
+
+    BackHandler {
+        if (selectedConversation != null) {
+            onSelectConversation(null)
+        } else {
+            onBack()
+        }
+    }
+
+    fun loadMessages(conversation: AgencyConversationUi) {
+        db.collection("conversations").document(conversation.id)
+            .collection("messages")
+            .get()
+            .addOnSuccessListener { result ->
+                messages = result.documents.map { doc ->
+                    AgencyChatMessageUi(
+                        id = doc.id,
+                        senderId = doc.getString("senderId") ?: "",
+                        senderRole = doc.getString("senderRole") ?: "",
+                        text = doc.getString("text") ?: "",
+                        createdAt = doc.getLong("createdAt") ?: 0L
+                    )
+                }.sortedBy { it.createdAt }
+                db.collection("conversations").document(conversation.id).update("unreadForAgency", 0L)
+            }
+            .addOnFailureListener { localMessage = "Erreur chargement messages : ${it.message}" }
+    }
+
+    fun sendMessage(conversation: AgencyConversationUi) {
+        val content = text.trim()
+        if (content.isBlank()) return
+        val now = System.currentTimeMillis()
+        val convRef = db.collection("conversations").document(conversation.id)
+        val msg = hashMapOf(
+            "senderId" to agencyId,
+            "senderRole" to "agency",
+            "text" to content,
+            "createdAt" to now
+        )
+        convRef.collection("messages").add(msg).addOnSuccessListener {
+            convRef.update(
+                mapOf(
+                    "lastMessage" to content,
+                    "updatedAt" to now,
+                    "unreadForClient" to 1L,
+                    "agencyName" to agencyName
+                )
+            )
+            text = ""
+            loadMessages(conversation)
+            onRefresh()
+        }.addOnFailureListener { localMessage = "Erreur envoi : ${it.message}" }
+    }
+
+    LaunchedEffect(selectedConversation?.id) {
+        selectedConversation?.let { loadMessages(it) }
+    }
+
+    if (selectedConversation == null) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().background(Color(0xFFF4F6F8)).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = onBack, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("← Retour") }
+                    OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(16.dp)) { Text("Actualiser") }
+                }
+            }
+            item { Text("Messagerie", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Discussions avec les clients", color = Color.Gray) }
+            if (conversations.isEmpty()) {
+                item { AgencyEmptyCard("Aucun message pour le moment.") }
+            } else {
+                items(conversations) { conversation ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelectConversation(conversation) },
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        elevation = CardDefaults.cardElevation(4.dp)
+                    ) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ProfileCircle(text = conversation.clientName.take(1).ifBlank { "C" }, imageUrl = "")
+                            Column(Modifier.weight(1f)) {
+                                Text(conversation.clientName.ifBlank { "Client" }, fontWeight = FontWeight.Bold)
+                                Text(conversation.carName.ifBlank { "Discussion générale" }, color = Color.Gray)
+                                if (conversation.lastMessage.isNotBlank()) Text(conversation.lastMessage, color = Color.Gray)
+                            }
+                            if (conversation.unreadForAgency > 0) {
+                                Box(Modifier.width(24.dp).height(24.dp).clip(CircleShape).background(Color(0xFFD13438)), contentAlignment = Alignment.Center) { Text(conversation.unreadForAgency.toString(), color = Color.White, style = MaterialTheme.typography.bodySmall) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxSize().background(Color(0xFFF4F6F8)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { onSelectConversation(null) }, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("← Retour") }
+                Column { Text(selectedConversation.clientName, fontWeight = FontWeight.Bold); Text(selectedConversation.carName.ifBlank { "Discussion" }, color = Color.Gray) }
+            }
+            if (localMessage.isNotEmpty()) Text(localMessage, color = MaterialTheme.colorScheme.error)
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (messages.isEmpty()) item { AgencyEmptyCard("Aucun message dans cette discussion.") }
+                items(messages) { msg ->
+                    val mine = msg.senderRole == "agency"
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+                        Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (mine) Color(0xFF1DA1F2) else Color.White)) {
+                            Text(msg.text, modifier = Modifier.padding(12.dp), color = if (mine) Color.White else Color.Black)
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.weight(1f), label = { Text("Écrire un message") }, shape = RoundedCornerShape(18.dp))
+                Button(onClick = { sendMessage(selectedConversation) }, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("Envoyer") }
+            }
+        }
     }
 }
 

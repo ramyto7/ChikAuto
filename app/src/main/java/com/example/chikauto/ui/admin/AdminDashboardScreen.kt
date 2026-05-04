@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -94,6 +95,21 @@ data class AdminCarUi(
     val totalReviews: Long = 0L
 )
 
+data class AdminReservationUi(
+    val id: String = "",
+    val agencyId: String = "",
+    val agencyName: String = "",
+    val carId: String = "",
+    val carName: String = "",
+    val clientId: String = "",
+    val clientName: String = "",
+    val startDateMillis: Long = 0L,
+    val endDateMillis: Long = 0L,
+    val totalDays: Int = 0,
+    val totalPrice: Double = 0.0,
+    val status: String = "pending"
+)
+
 @Composable
 fun AdminDashboardScreen(navController: NavController) {
     val auth = FirebaseAuth.getInstance()
@@ -112,6 +128,7 @@ fun AdminDashboardScreen(navController: NavController) {
     var agencies by remember { mutableStateOf(listOf<AdminAgencyUi>()) }
     var cars by remember { mutableStateOf(listOf<AdminCarUi>()) }
     var pendingAgencies by remember { mutableStateOf(listOf<AdminAgencyUi>()) }
+    var reservations by remember { mutableStateOf(listOf<AdminReservationUi>()) }
 
     var brands by remember { mutableStateOf(listOf<Brand>()) }
     var models by remember { mutableStateOf(listOf<CarModel>()) }
@@ -201,6 +218,30 @@ fun AdminDashboardScreen(navController: NavController) {
             }
             .addOnFailureListener {
                 message = "Erreur chargement voitures : ${it.message}"
+            }
+
+        db.collection("reservations")
+            .get()
+            .addOnSuccessListener { result ->
+                reservations = result.documents.map { doc ->
+                    AdminReservationUi(
+                        id = doc.id,
+                        agencyId = doc.getString("agencyId") ?: "",
+                        agencyName = doc.getString("agencyName") ?: "",
+                        carId = doc.getString("carId") ?: "",
+                        carName = doc.getString("carName") ?: "",
+                        clientId = doc.getString("clientId") ?: "",
+                        clientName = doc.getString("clientName") ?: "",
+                        startDateMillis = doc.getLong("startDateMillis") ?: 0L,
+                        endDateMillis = doc.getLong("endDateMillis") ?: 0L,
+                        totalDays = (doc.getLong("totalDays") ?: 0L).toInt(),
+                        totalPrice = doc.getDouble("totalPrice") ?: 0.0,
+                        status = doc.getString("status") ?: "pending"
+                    )
+                }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement réservations : ${it.message}"
             }
 
         db.collection("carBrands")
@@ -315,6 +356,13 @@ fun AdminDashboardScreen(navController: NavController) {
                                 }
                             }
                         }
+                    )
+
+                    "dashboard" -> AdminAnalyticsDashboardScreen(
+                        agencies = agencies,
+                        cars = cars,
+                        reservations = reservations,
+                        onRefresh = { loadData() }
                     )
 
                     "database" -> AdminCatalogScreen(
@@ -471,6 +519,230 @@ fun AdminHomeScreen(
             ) {
                 Text("Se déconnecter")
             }
+        }
+    }
+}
+
+
+@Composable
+fun AdminAnalyticsDashboardScreen(
+    agencies: List<AdminAgencyUi>,
+    cars: List<AdminCarUi>,
+    reservations: List<AdminReservationUi>,
+    onRefresh: () -> Unit
+) {
+    var sortMode by remember { mutableStateOf("reservations") }
+    var query by remember { mutableStateOf("") }
+    var selectedRow by remember { mutableStateOf<AdminAgencyDashboardRow?>(null) }
+
+    val accepted = reservations.filter { it.status == "accepted" }
+    val pending = reservations.count { it.status == "pending" }
+    val refused = reservations.count { it.status == "refused" }
+    val revenue = accepted.sumOf { it.totalPrice }
+
+    val rows = agencies.map { agency ->
+        val agencyCars = cars.filter { it.agencyId == agency.id || it.agencyId == agency.ownerId || it.agencyName == agency.agencyName }
+        val agencyReservations = reservations.filter { it.agencyId == agency.id || it.agencyName == agency.agencyName }
+        val agencyAccepted = agencyReservations.filter { it.status == "accepted" }
+        AdminAgencyDashboardRow(
+            agency = agency,
+            carsCount = agencyCars.size,
+            availableCars = agencyCars.count { it.available && it.status != "maintenance" && it.status != "disabled" },
+            reservationsCount = agencyReservations.size,
+            acceptedCount = agencyAccepted.size,
+            pendingCount = agencyReservations.count { it.status == "pending" },
+            revenue = agencyAccepted.sumOf { it.totalPrice },
+            rating = agency.ratingAverage
+        )
+    }.filter {
+        query.isBlank() || it.agency.agencyName.contains(query, true) || it.agency.city.contains(query, true)
+    }.let { list ->
+        when (sortMode) {
+            "cars" -> list.sortedByDescending { it.carsCount }
+            "rating" -> list.sortedByDescending { it.rating }
+            "bad_rating" -> list.sortedBy { if (it.rating <= 0.0) 99.0 else it.rating }
+            "revenue" -> list.sortedByDescending { it.revenue }
+            else -> list.sortedByDescending { it.acceptedCount }
+        }
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            Text("Dashboard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Analyse globale de l'application", color = Color.Gray)
+        }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { AdminMiniKpi("Réservations", reservations.size.toString(), Modifier.weight(1f)); AdminMiniKpi("Acceptées", accepted.size.toString(), Modifier.weight(1f)) } }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { AdminMiniKpi("En attente", pending.toString(), Modifier.weight(1f)); AdminMiniKpi("Revenus", "${revenue.toInt()} DA", Modifier.weight(1f)) } }
+        item {
+            Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(5.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Graphique résumé", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    AdminProgressLine("Acceptées", accepted.size, reservations.size, Color(0xFF13A10E))
+                    AdminProgressLine("En attente", pending, reservations.size, Color(0xFF1DA1F2))
+                    AdminProgressLine("Refusées", refused, reservations.size, Color(0xFFD13438))
+                }
+            }
+        }
+        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Rechercher une agence ou une ville") }, shape = RoundedCornerShape(18.dp)) }
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { AssistChip(onClick = { sortMode = "reservations" }, label = { Text("Top réservations") }) }
+                item { AssistChip(onClick = { sortMode = "cars" }, label = { Text("Plus de voitures") }) }
+                item { AssistChip(onClick = { sortMode = "revenue" }, label = { Text("Meilleur revenu") }) }
+                item { AssistChip(onClick = { sortMode = "rating" }, label = { Text("Meilleures notes") }) }
+                item { AssistChip(onClick = { sortMode = "bad_rating" }, label = { Text("Mauvaises notes") }) }
+            }
+        }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) { Text("Liste des agences", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(16.dp)) { Text("Actualiser") } } }
+        if (rows.isEmpty()) item { SimpleCard("Aucune agence trouvée.") } else items(rows) { row -> AdminAgencyDashboardCard(row, onView = { selectedRow = row }) }
+    }
+
+    selectedRow?.let { row ->
+        AdminAgencyDashboardDetailsDialog(
+            row = row,
+            cars = cars.filter { it.agencyId == row.agency.id || it.agencyId == row.agency.ownerId || it.agencyName == row.agency.agencyName },
+            reservations = reservations.filter { it.agencyId == row.agency.id || it.agencyName == row.agency.agencyName },
+            onDismiss = { selectedRow = null }
+        )
+    }
+}
+
+data class AdminAgencyDashboardRow(
+    val agency: AdminAgencyUi,
+    val carsCount: Int,
+    val availableCars: Int,
+    val reservationsCount: Int,
+    val acceptedCount: Int,
+    val pendingCount: Int,
+    val revenue: Double,
+    val rating: Double
+)
+
+@Composable
+fun AdminMiniKpi(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(5.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            Text(value, color = Color(0xFF1DA1F2), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun AdminProgressLine(label: String, value: Int, total: Int, color: Color) {
+    val ratio = if (total <= 0) 0f else (value.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text("$value", fontWeight = FontWeight.Bold) }
+        Box(Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFFE8EEF5))) { Box(Modifier.fillMaxWidth(ratio).height(9.dp).clip(RoundedCornerShape(20.dp)).background(color)) }
+    }
+}
+
+@Composable
+fun AdminAgencyDashboardCard(row: AdminAgencyDashboardRow, onView: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(5.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                AdminDashboardProfileCircle(text = row.agency.agencyName.take(1).ifBlank { "A" }, imageUrl = row.agency.profileImageUrl)
+                Column(Modifier.weight(1f)) { Text(row.agency.agencyName.ifBlank { "Agence" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(row.agency.city.ifBlank { "Ville non précisée" }, color = Color.Gray) }
+                Text("★ ${String.format(Locale.FRANCE, "%.1f", row.rating)}", fontWeight = FontWeight.Bold, color = if (row.rating < 3.0 && row.rating > 0.0) Color(0xFFD13438) else Color(0xFF13A10E))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { AdminMiniKpi("Voitures", row.carsCount.toString(), Modifier.weight(1f)); AdminMiniKpi("Disponibles", row.availableCars.toString(), Modifier.weight(1f)) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { AdminMiniKpi("Réservations", row.reservationsCount.toString(), Modifier.weight(1f)); AdminMiniKpi("Acceptées", row.acceptedCount.toString(), Modifier.weight(1f)) }
+            Text("En attente : ${row.pendingCount}  •  Revenu accepté : ${row.revenue.toInt()} DA", color = Color.Gray)
+            Button(onClick = onView, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) {
+                Text("Voir les détails")
+            }
+        }
+    }
+}
+
+@Composable
+fun AdminAgencyDashboardDetailsDialog(
+    row: AdminAgencyDashboardRow,
+    cars: List<AdminCarUi>,
+    reservations: List<AdminReservationUi>,
+    onDismiss: () -> Unit
+) {
+    val accepted = reservations.count { it.status == "accepted" }
+    val pending = reservations.count { it.status == "pending" }
+    val refused = reservations.count { it.status == "refused" }
+    val revenue = reservations.filter { it.status == "accepted" }.sumOf { it.totalPrice }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { Button(onClick = onDismiss) { Text("Fermer") } },
+        title = { Text(row.agency.agencyName.ifBlank { "Agence" }) },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(max = 520.dp)) {
+                item { Text("Ville : ${row.agency.city.ifBlank { "Non précisée" }}") }
+                item { Text("Téléphone : ${row.agency.phone.ifBlank { "Non précisé" }}") }
+                item { Text("Email : ${row.agency.email.ifBlank { "Non précisé" }}") }
+                item { Text("Note moyenne : ${String.format(Locale.FRANCE, "%.1f", row.rating)} / 5") }
+                item { Text("Revenu accepté : ${revenue.toInt()} DA", fontWeight = FontWeight.Bold) }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AdminMiniKpi("Acceptées", accepted.toString(), Modifier.weight(1f))
+                        AdminMiniKpi("En attente", pending.toString(), Modifier.weight(1f))
+                    }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AdminMiniKpi("Refusées", refused.toString(), Modifier.weight(1f))
+                        AdminMiniKpi("Voitures", cars.size.toString(), Modifier.weight(1f))
+                    }
+                }
+                item { Text("Voitures de cette agence", fontWeight = FontWeight.Bold) }
+                if (cars.isEmpty()) {
+                    item { Text("Aucune voiture trouvée.", color = Color.Gray) }
+                } else {
+                    items(cars) { car ->
+                        Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F6F8))) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text("${car.brandName} ${car.modelName}", fontWeight = FontWeight.Bold)
+                                Text("${car.pricePerDay.toInt()} DA/jour • ${car.status.ifBlank { "statut non précisé" }}", color = Color.Gray)
+                            }
+                        }
+                    }
+                }
+                item { Text("Réservations", fontWeight = FontWeight.Bold) }
+                if (reservations.isEmpty()) {
+                    item { Text("Aucune réservation trouvée.", color = Color.Gray) }
+                } else {
+                    items(reservations.sortedByDescending { it.startDateMillis }) { r ->
+                        Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F6F8))) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text(r.carName.ifBlank { "Voiture" }, fontWeight = FontWeight.Bold)
+                                Text("Client : ${r.clientName.ifBlank { "Client" }}")
+                                Text("Durée : ${r.totalDays} jour(s) • Total : ${r.totalPrice.toInt()} DA")
+                                Text("Statut : ${r.status}", color = when (r.status) { "accepted" -> Color(0xFF13A10E); "refused" -> Color(0xFFD13438); else -> Color(0xFF1DA1F2) }, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun AdminDashboardProfileCircle(text: String, imageUrl: String) {
+    Box(
+        modifier = Modifier
+            .height(46.dp)
+            .width(46.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF1DA1F2)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageUrl.isNotBlank()) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Agence",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Text(text.uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -2002,6 +2274,14 @@ fun AdminBottomBar(
                 key = "home",
                 label = "Accueil",
                 icon = "⌂",
+                selectedTab = selectedTab,
+                onTabSelected = onTabSelected
+            )
+
+            AdminBottomItem(
+                key = "dashboard",
+                label = "Dashboard",
+                icon = "📊",
                 selectedTab = selectedTab,
                 onTabSelected = onTabSelected
             )

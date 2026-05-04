@@ -1,18 +1,14 @@
-name: ChikAuto Android CI CD
+name: ChikAuto Android CI CD DevSecOps
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
 
 jobs:
   build-test-package:
-    name: Build, Test and Package APK
+    name: Build, Unit Tests and APK
     runs-on: ubuntu-latest
 
     steps:
@@ -28,25 +24,27 @@ jobs:
       - name: Donner permission à Gradle
         run: chmod +x ./gradlew
 
-      - name: Vérifier la version Gradle
-        run: ./gradlew --version
-
-      - name: Compiler l'application Android
+      - name: Compiler l'application
         run: ./gradlew assembleDebug
 
       - name: Lancer les tests unitaires
         run: ./gradlew testDebugUnitTest
 
-      - name: Générer l'APK Debug
-        run: ./gradlew assembleDebug
+      - name: Sauvegarder le rapport des tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-tests-unitaires
+          path: app/build/reports/tests/testDebugUnitTest/
 
-      - name: Sauvegarder l'APK comme artefact
+      - name: Sauvegarder APK Debug
         uses: actions/upload-artifact@v4
         with:
           name: ChikAuto-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-  security-secrets:
-    name: DevSecOps - Scan secrets
+
+  secret-detection:
+    name: Secret Detection - Gitleaks
     runs-on: ubuntu-latest
 
     steps:
@@ -57,3 +55,50 @@ jobs:
 
       - name: Scanner les secrets avec Gitleaks
         uses: gitleaks/gitleaks-action@v2
+
+  sast-codeql:
+    name: SAST - CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Initialiser CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+
+      - name: Compiler pour CodeQL
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+
+      - name: Analyse SAST CodeQL
+        uses: github/codeql-action/analyze@v3
+
+  sca-dependencies:
+    name: SCA - Analyse dépendances
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Scanner les dépendances
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: ChikAuto
+          path: .
+          format: HTML
+
+      - name: Sauvegarder rapport SCA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-sca-dependances
+          path: reports/

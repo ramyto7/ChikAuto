@@ -127,7 +127,7 @@ object PredictionEngine {
         }
 
         val explanation =
-            "Analyse"
+            ""
 
         val confidence = when {
             previousRentals >= 10 -> 88

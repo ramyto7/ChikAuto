@@ -76,6 +76,27 @@ data class ClientAgencyUi(
     val totalReviews: Long = 0L
 )
 
+data class ClientConversationUi(
+    val id: String = "",
+    val clientId: String = "",
+    val clientName: String = "",
+    val agencyId: String = "",
+    val agencyName: String = "",
+    val carId: String = "",
+    val carName: String = "",
+    val lastMessage: String = "",
+    val updatedAt: Long = 0L,
+    val unreadForClient: Long = 0L
+)
+
+data class ClientChatMessageUi(
+    val id: String = "",
+    val senderId: String = "",
+    val senderRole: String = "",
+    val text: String = "",
+    val createdAt: Long = 0L
+)
+
 @Composable
 fun ClientHomeScreen(navController: NavController) {
     val auth = FirebaseAuth.getInstance()
@@ -96,6 +117,8 @@ fun ClientHomeScreen(navController: NavController) {
     var reservations by remember { mutableStateOf(listOf<ClientReservationUi>()) }
     var acceptedReservationsForAllCars by remember { mutableStateOf(listOf<ClientReservationUi>()) }
     var favoriteIds by remember { mutableStateOf(setOf<String>()) }
+    var conversations by remember { mutableStateOf(listOf<ClientConversationUi>()) }
+    var selectedConversation by remember { mutableStateOf<ClientConversationUi?>(null) }
 
     var search by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
@@ -113,6 +136,13 @@ fun ClientHomeScreen(navController: NavController) {
     var reservationForReview by remember { mutableStateOf<ClientReservationUi?>(null) }
     var showFilterDialog by remember { mutableStateOf(false) }
     var showEditProfile by remember { mutableStateOf(false) }
+    var showDrawer by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
+    var showTerms by remember { mutableStateOf(false) }
+    var language by remember { mutableStateOf("fr") }
+    var darkMode by remember { mutableStateOf(false) }
+    var notificationsEnabled by remember { mutableStateOf(true) }
 
     var filters by remember { mutableStateOf(ClientFilterState()) }
 
@@ -227,6 +257,29 @@ fun ClientHomeScreen(navController: NavController) {
             }
             .addOnFailureListener {
                 message = "Erreur chargement disponibilités : ${it.message}"
+            }
+
+        db.collection("conversations")
+            .whereEqualTo("clientId", clientId)
+            .get()
+            .addOnSuccessListener { result ->
+                conversations = result.documents.map { doc ->
+                    ClientConversationUi(
+                        id = doc.id,
+                        clientId = doc.getString("clientId") ?: clientId,
+                        clientName = doc.getString("clientName") ?: fullName,
+                        agencyId = doc.getString("agencyId") ?: "",
+                        agencyName = doc.getString("agencyName") ?: "Agence",
+                        carId = doc.getString("carId") ?: "",
+                        carName = doc.getString("carName") ?: "",
+                        lastMessage = doc.getString("lastMessage") ?: "",
+                        updatedAt = doc.getLong("updatedAt") ?: 0L,
+                        unreadForClient = doc.getLong("unreadForClient") ?: 0L
+                    )
+                }.sortedByDescending { it.updatedAt }
+            }
+            .addOnFailureListener {
+                message = "Erreur chargement messagerie : ${it.message}"
             }
     }
 
@@ -371,6 +424,57 @@ fun ClientHomeScreen(navController: NavController) {
             }
     }
 
+    fun openConversationWithAgency(agency: ClientAgencyUi, car: Car? = null) {
+        val agencyKey = agency.ownerId.ifBlank { agency.id }
+        db.collection("conversations")
+            .whereEqualTo("clientId", clientId)
+            .whereEqualTo("agencyId", agencyKey)
+            .whereEqualTo("carId", car?.id ?: "")
+            .get()
+            .addOnSuccessListener { result ->
+                val existing = result.documents.firstOrNull()
+                if (existing != null) {
+                    selectedConversation = ClientConversationUi(
+                        id = existing.id,
+                        clientId = clientId,
+                        clientName = existing.getString("clientName") ?: fullName,
+                        agencyId = existing.getString("agencyId") ?: agencyKey,
+                        agencyName = existing.getString("agencyName") ?: agency.agencyName,
+                        carId = existing.getString("carId") ?: (car?.id ?: ""),
+                        carName = existing.getString("carName") ?: car?.let { "${it.brandName} ${it.modelName}" }.orEmpty(),
+                        lastMessage = existing.getString("lastMessage") ?: "",
+                        updatedAt = existing.getLong("updatedAt") ?: 0L,
+                        unreadForClient = existing.getLong("unreadForClient") ?: 0L
+                    )
+                    selectedTab = "messages"
+                } else {
+                    val ref = db.collection("conversations").document()
+                    val carName = car?.let { "${it.brandName} ${it.modelName}" } ?: ""
+                    val data = hashMapOf(
+                        "clientId" to clientId,
+                        "clientName" to fullName,
+                        "agencyId" to agencyKey,
+                        "agencyName" to agency.agencyName,
+                        "carId" to (car?.id ?: ""),
+                        "carName" to carName,
+                        "lastMessage" to "",
+                        "updatedAt" to System.currentTimeMillis(),
+                        "unreadForClient" to 0L,
+                        "unreadForAgency" to 0L
+                    )
+                    ref.set(data).addOnSuccessListener {
+                        selectedConversation = ClientConversationUi(
+                            id = ref.id, clientId = clientId, clientName = fullName, agencyId = agencyKey,
+                            agencyName = agency.agencyName, carId = car?.id ?: "", carName = carName
+                        )
+                        selectedTab = "messages"
+                        loadData()
+                    }
+                }
+            }
+            .addOnFailureListener { message = "Erreur ouverture messagerie : ${it.message}" }
+    }
+
     fun addReview(
         reservation: ClientReservationUi,
         carRating: Int,
@@ -507,10 +611,12 @@ fun ClientHomeScreen(navController: NavController) {
     val acceptedCount = reservations.count { it.status == "accepted" }
     val refusedCount = reservations.count { it.status == "refused" }
 
+    val screenBg = if (darkMode) Color(0xFF101418) else Color(0xFFF4F6F8)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF4F6F8))
+            .background(screenBg)
     ) {
         Column(
             modifier = Modifier
@@ -545,10 +651,14 @@ fun ClientHomeScreen(navController: NavController) {
                     onCityClick = { showCityDialog = true },
                     onAllBrandsClick = { showAllBrands = true },
                     onAllAgenciesClick = { showAllAgencies = true },
-                    onAgencyClick = { selectedAgencyForDetails = it }
+                    onAgencyClick = { selectedAgencyForDetails = it },
+                    onMenuClick = { showDrawer = true },
+                    language = language,
+                    darkMode = darkMode
                 )
 
                 "favorites" -> ClientFavoritesTab(
+                    language = language,
                     cars = cars.filter { car ->
                         favoriteIds.contains(car.id) &&
                                 car.available &&
@@ -566,6 +676,7 @@ fun ClientHomeScreen(navController: NavController) {
                 )
 
                 "reservations" -> ClientReservationsTab(
+                    language = language,
                     reservations = reservations,
                     cars = cars,
                     pendingCount = pendingCount,
@@ -575,7 +686,18 @@ fun ClientHomeScreen(navController: NavController) {
                     onReviewReservation = { reservationForReview = it }
                 )
 
+                "messages" -> ClientMessagesTab(
+                    clientId = clientId,
+                    fullName = fullName,
+                    conversations = conversations,
+                    selectedConversation = selectedConversation,
+                    onBack = { selectedConversation = null; selectedTab = "home"; loadData() },
+                    onSelectConversation = { selectedConversation = it },
+                    onRefresh = { loadData() }
+                )
+
                 "profile" -> ClientProfileTab(
+                    language = language,
                     fullName = fullName,
                     email = email,
                     phone = phone,
@@ -595,8 +717,29 @@ fun ClientHomeScreen(navController: NavController) {
             }
         }
 
+        if (showDrawer) {
+            ClientSideDrawer(
+                fullName = fullName,
+                email = email,
+                profileImageUrl = profileImageUrl,
+                onClose = { showDrawer = false },
+                onProfile = { showDrawer = false; selectedTab = "profile" },
+                onSettings = { showDrawer = false; showSettings = true },
+                onAbout = { showDrawer = false; showAbout = true },
+                onTerms = { showDrawer = false; showTerms = true },
+                onLogout = {
+                    auth.signOut()
+                    navController.navigate("login") {
+                        popUpTo("client_home") { inclusive = true }
+                    }
+                }
+            )
+        }
+
         ClientBottomBar(
             selectedTab = selectedTab,
+            unreadMessagesCount = conversations.sumOf { it.unreadForClient }.toInt(),
+            language = language,
             onTabSelected = { selectedTab = it },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
@@ -605,6 +748,7 @@ fun ClientHomeScreen(navController: NavController) {
     selectedCarForReservation?.let { car ->
         ReservationDialog(
             car = car,
+            acceptedReservations = acceptedReservationsForAllCars.filter { it.carId == car.id },
             onDismiss = { selectedCarForReservation = null },
             onConfirm = { startText, endText, startMillis, endMillis, days ->
                 createReservation(car, startText, endText, startMillis, endMillis, days)
@@ -653,6 +797,10 @@ fun ClientHomeScreen(navController: NavController) {
             onOpenCarDetails = {
                 selectedAgencyForDetails = null
                 openCarDetails(it)
+            },
+            onMessageAgency = {
+                selectedAgencyForDetails = null
+                openConversationWithAgency(agency)
             }
         )
     }
@@ -724,6 +872,45 @@ fun ClientHomeScreen(navController: NavController) {
         )
     }
 
+
+    if (showAbout) {
+        ClientInfoDialog(
+            title = if (language == "en") "About ChikAuto" else "À propos de ChikAuto",
+            icon = "ⓘ",
+            body = if (language == "en") {
+                "ChikAuto is a car rental application that connects clients with rental agencies. Clients can search for cars, reserve, manage favorites, follow reservations and contact agencies by messages."
+            } else {
+                "ChikAuto est une application de location de voitures qui relie les clients aux agences. Le client peut chercher une voiture, réserver, gérer ses favoris, suivre ses réservations et contacter les agences par messagerie."
+            },
+            onDismiss = { showAbout = false }
+        )
+    }
+
+    if (showTerms) {
+        ClientInfoDialog(
+            title = if (language == "en") "Terms of use" else "Conditions d'utilisation",
+            icon = "§",
+            body = if (language == "en") {
+                "Use the application respectfully. Reservations are confirmed only after agency approval. False information, abusive messages and fake reservations can lead to account suspension."
+            } else {
+                "Utilisez l’application correctement. Une réservation est confirmée seulement après l’acceptation de l’agence. Les fausses informations, les messages abusifs et les fausses réservations peuvent entraîner la suspension du compte."
+            },
+            onDismiss = { showTerms = false }
+        )
+    }
+
+    if (showSettings) {
+        ClientSettingsDialog(
+            language = language,
+            darkMode = darkMode,
+            notificationsEnabled = notificationsEnabled,
+            onLanguageChange = { language = it },
+            onDarkModeChange = { darkMode = it },
+            onNotificationsChange = { notificationsEnabled = it },
+            onDismiss = { showSettings = false }
+        )
+    }
+
     if (showEditProfile) {
         EditProfileDialog(
             role = "client",
@@ -762,7 +949,10 @@ fun ClientHomeTab(
     onCityClick: () -> Unit,
     onAllBrandsClick: () -> Unit,
     onAllAgenciesClick: () -> Unit,
-    onAgencyClick: (ClientAgencyUi) -> Unit
+    onAgencyClick: (ClientAgencyUi) -> Unit,
+    onMenuClick: () -> Unit,
+    language: String,
+    darkMode: Boolean
 ) {
     val maxPrice = filters.maxPrice.toDoubleOrNull()
 
@@ -792,7 +982,8 @@ fun ClientHomeTab(
                 fullName = fullName,
                 profileImageUrl = profileImageUrl,
                 onProfileClick = onProfileClick,
-                onCityClick = onCityClick
+                onCityClick = onCityClick,
+                onMenuClick = onMenuClick
             )
         }
 
@@ -933,7 +1124,8 @@ fun ClientTopHeader(
     fullName: String,
     profileImageUrl: String,
     onProfileClick: () -> Unit,
-    onCityClick: () -> Unit
+    onCityClick: () -> Unit,
+    onMenuClick: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -941,6 +1133,7 @@ fun ClientTopHeader(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Card(
+            modifier = Modifier.clickable { onMenuClick() },
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White),
             elevation = CardDefaults.cardElevation(4.dp)
@@ -1447,7 +1640,8 @@ fun AgencyDetailsDialog(
     onDismiss: () -> Unit,
     onToggleFavorite: (Car) -> Unit,
     onReserveCar: (Car) -> Unit,
-    onOpenCarDetails: (Car) -> Unit
+    onOpenCarDetails: (Car) -> Unit,
+    onMessageAgency: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1499,6 +1693,16 @@ fun AgencyDetailsDialog(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                }
+
+                item {
+                    OutlinedButton(
+                        onClick = onMessageAgency,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("✉ Contacter")
                     }
                 }
 
@@ -1657,9 +1861,11 @@ fun CityItem(
     }
 }
 
+
 @Composable
 fun ReservationDialog(
     car: Car,
+    acceptedReservations: List<ClientReservationUi>,
     onDismiss: () -> Unit,
     onConfirm: (String, String, Long, Long, Int) -> Unit
 ) {
@@ -1668,7 +1874,9 @@ fun ReservationDialog(
     var startMillis by remember { mutableStateOf(0L) }
     var endMillis by remember { mutableStateOf(0L) }
     var error by remember { mutableStateOf("") }
+    var pickingMode by remember { mutableStateOf<String?>(null) }
 
+    val reservedDays = remember(acceptedReservations) { buildReservedDays(acceptedReservations) }
     val totalDays = calculateDays(startMillis, endMillis)
     val totalPrice = totalDays * car.pricePerDay
 
@@ -1678,99 +1886,156 @@ fun ReservationDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Prix : ${car.pricePerDay} DA / jour")
+                Text("Les jours déjà loués sont bloqués automatiquement.", color = Color.Gray)
 
-                AppDateButton(
-                    label = "Date début",
-                    value = startDateText,
-                    onDateSelected = { text, millis ->
-                        startDateText = text
-                        startMillis = millis
-                        error = ""
-                    }
-                )
+                OutlinedButton(
+                    onClick = { pickingMode = "start" },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                ) { Text(if (startDateText.isBlank()) "Date début 📅" else "Date début : $startDateText") }
 
-                AppDateButton(
-                    label = "Date fin",
-                    value = endDateText,
-                    onDateSelected = { text, millis ->
-                        endDateText = text
-                        endMillis = millis
-                        error = ""
-                    }
-                )
+                OutlinedButton(
+                    onClick = { pickingMode = "end" },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    enabled = startMillis > 0L
+                ) { Text(if (endDateText.isBlank()) "Date fin 📅" else "Date fin : $endDateText") }
 
                 if (totalDays > 0) {
                     Text("Durée : $totalDays jour(s)")
                     Text("Total : $totalPrice DA")
                 }
 
-                if (error.isNotEmpty()) {
-                    Text(error, color = MaterialTheme.colorScheme.error)
-                }
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (startMillis <= 0L || endMillis <= 0L) {
-                        error = "Veuillez sélectionner les deux dates."
-                        return@Button
-                    }
-
-                    if (endMillis < startMillis) {
-                        error = "La date fin doit être après la date début."
-                        return@Button
-                    }
-
-                    onConfirm(startDateText, endDateText, startMillis, endMillis, totalDays)
+            Button(onClick = {
+                if (startMillis <= 0L || endMillis <= 0L) {
+                    error = "Veuillez sélectionner les deux dates."
+                    return@Button
                 }
-            ) {
-                Text("Envoyer demande")
-            }
+                if (endMillis < startMillis) {
+                    error = "La date fin doit être après la date début."
+                    return@Button
+                }
+                if (rangeContainsReservedDay(startMillis, endMillis, reservedDays)) {
+                    error = "Cette période contient déjà des jours loués. Choisissez une autre période."
+                    return@Button
+                }
+                onConfirm(startDateText, endDateText, startMillis, endMillis, totalDays)
+            }) { Text("Envoyer demande") }
         },
-        dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text("Annuler")
-            }
-        }
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Annuler") } }
     )
+
+    pickingMode?.let { mode ->
+        AvailabilityCalendarDialog(
+            title = if (mode == "start") "Choisir la date début" else "Choisir la date fin",
+            reservedDays = reservedDays,
+            startMillis = startMillis,
+            pickingEndDate = mode == "end",
+            onDismiss = { pickingMode = null },
+            onDateSelected = { text, millis ->
+                if (mode == "start") {
+                    startDateText = text
+                    startMillis = millis
+                    endDateText = ""
+                    endMillis = 0L
+                } else {
+                    endDateText = text
+                    endMillis = millis
+                }
+                error = ""
+                pickingMode = null
+            }
+        )
+    }
 }
 
 @Composable
-fun AppDateButton(
-    label: String,
-    value: String,
+fun AvailabilityCalendarDialog(
+    title: String,
+    reservedDays: Set<Long>,
+    startMillis: Long,
+    pickingEndDate: Boolean,
+    onDismiss: () -> Unit,
     onDateSelected: (String, Long) -> Unit
 ) {
-    val context = LocalContext.current
-    val calendar = Calendar.getInstance()
-
-    OutlinedButton(
-        onClick = {
-            DatePickerDialog(
-                context,
-                { _, year, month, day ->
-                    val selectedCalendar = Calendar.getInstance()
-                    selectedCalendar.set(year, month, day, 0, 0, 0)
-                    selectedCalendar.set(Calendar.MILLISECOND, 0)
-
-                    val formatter = SimpleDateFormat("dd/MM/yyyy", Locale.FRANCE)
-
-                    onDateSelected(
-                        formatter.format(selectedCalendar.time),
-                        selectedCalendar.timeInMillis
-                    )
-                },
-                calendar.get(Calendar.YEAR),
-                calendar.get(Calendar.MONTH),
-                calendar.get(Calendar.DAY_OF_MONTH)
-            ).show()
-        },
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Text(if (value.isBlank()) "$label 📅" else "$label : $value")
+    var monthOffset by remember { mutableIntStateOf(0) }
+    val formatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.FRANCE) }
+    val today = todayStartMillis()
+    val base = Calendar.getInstance().apply {
+        set(Calendar.DAY_OF_MONTH, 1)
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        add(Calendar.MONTH, monthOffset)
     }
+    val monthName = SimpleDateFormat("MMMM yyyy", Locale.FRANCE).format(base.time)
+    val maxAllowedEnd = if (pickingEndDate && startMillis > 0L) nextBlockedDayAfter(startMillis, reservedDays) else Long.MAX_VALUE
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { monthOffset-- }, enabled = monthOffset > 0) { Text("‹") }
+                    Text(monthName.replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.Bold)
+                    OutlinedButton(onClick = { monthOffset++ }) { Text("›") }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                    listOf("L", "M", "M", "J", "V", "S", "D").forEach { Text(it, fontWeight = FontWeight.Bold, color = Color.Gray) }
+                }
+                val days = monthCells(base)
+                days.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        week.forEach { dayMillis ->
+                            if (dayMillis == 0L) {
+                                Box(Modifier.weight(1f).height(42.dp))
+                            } else {
+                                val cal = Calendar.getInstance().apply { timeInMillis = dayMillis }
+                                val isReserved = reservedDays.contains(dayMillis)
+                                val beforeToday = dayMillis < today
+                                val beforeStart = pickingEndDate && dayMillis < startMillis
+                                val afterBlocked = pickingEndDate && dayMillis >= maxAllowedEnd
+                                val disabled = isReserved || beforeToday || beforeStart || afterBlocked
+                                val selected = dayMillis == startMillis
+                                Card(
+                                    modifier = Modifier.weight(1f).height(42.dp).clickable(enabled = !disabled) {
+                                        onDateSelected(formatter.format(cal.time), dayMillis)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = when {
+                                            disabled -> Color(0xFFE1E5EA)
+                                            selected -> Color(0xFF1DA1F2)
+                                            else -> Color.White
+                                        }
+                                    ),
+                                    elevation = CardDefaults.cardElevation(if (disabled) 0.dp else 2.dp)
+                                ) {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = cal.get(Calendar.DAY_OF_MONTH).toString(),
+                                            color = when {
+                                                disabled -> Color.Gray
+                                                selected -> Color.White
+                                                else -> Color.Black
+                                            },
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text("Gris = indisponible. Pour la date fin, les jours après une réservation bloquée sont aussi désactivés.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {},
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Fermer") } }
+    )
 }
 
 @Composable
@@ -1885,6 +2150,7 @@ fun AppDropdownLike(
 
 @Composable
 fun ClientFavoritesTab(
+    language: String,
     cars: List<Car>,
     favoriteIds: Set<String>,
     onToggleFavorite: (Car) -> Unit,
@@ -1899,7 +2165,7 @@ fun ClientFavoritesTab(
     ) {
         item {
             Text(
-                text = "Voitures favorites",
+                text = if (language == "en") "Favorite cars" else "Voitures favorites",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -1907,7 +2173,7 @@ fun ClientFavoritesTab(
 
         if (cars.isEmpty()) {
             item {
-                EmptyClientCard("Vous n’avez aucune voiture favorite.")
+                EmptyClientCard(if (language == "en") "You have no favorite cars." else "Vous n’avez aucune voiture favorite.")
             }
         } else {
             items(cars) { car ->
@@ -1925,6 +2191,7 @@ fun ClientFavoritesTab(
 
 @Composable
 fun ClientReservationsTab(
+    language: String,
     reservations: List<ClientReservationUi>,
     cars: List<Car>,
     pendingCount: Int,
@@ -1964,7 +2231,7 @@ fun ClientReservationsTab(
     ) {
         item {
             Text(
-                text = "Mes réservations",
+                text = if (language == "en") "My reservations" else "Mes réservations",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -2285,6 +2552,7 @@ fun ReviewDialog(
 
 @Composable
 fun ClientProfileTab(
+    language: String,
     fullName: String,
     email: String,
     phone: String,
@@ -2301,7 +2569,7 @@ fun ClientProfileTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Profil",
+            text = if (language == "en") "Profile" else "Profil",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
@@ -2358,7 +2626,7 @@ fun ClientProfileTab(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp)
         ) {
-            Text("Modifier le profil")
+            Text(if (language == "en") "Edit profile" else "Modifier le profil")
         }
 
         Button(
@@ -2366,7 +2634,7 @@ fun ClientProfileTab(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp)
         ) {
-            Text("Actualiser")
+            Text(if (language == "en") "Refresh" else "Actualiser")
         }
 
         OutlinedButton(
@@ -2394,9 +2662,282 @@ fun EmptyClientCard(text: String) {
     }
 }
 
+
+
+@Composable
+fun ProfileCircle(text: String, imageUrl: String) {
+    Box(
+        modifier = Modifier
+            .height(50.dp)
+            .width(50.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF1DA1F2)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageUrl.isNotBlank()) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Photo profil",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Text(text.uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun ClientSideDrawer(
+    fullName: String,
+    email: String,
+    profileImageUrl: String,
+    onClose: () -> Unit,
+    onProfile: () -> Unit,
+    onSettings: () -> Unit,
+    onAbout: () -> Unit,
+    onTerms: () -> Unit,
+    onLogout: () -> Unit
+) {
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)).clickable { onClose() }) {
+        Card(
+            modifier = Modifier.fillMaxHeight().width(310.dp).padding(12.dp).clickable(enabled = false) {},
+            shape = RoundedCornerShape(26.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(12.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ProfileCircle(text = fullName.take(1).ifBlank { "C" }, imageUrl = profileImageUrl)
+                    Column {
+                        Text(fullName.ifBlank { "Client" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(email.ifBlank { "Email non précisé" }, color = Color.Gray)
+                    }
+                }
+                Divider()
+                DrawerAction("👤", "Mon profil", onProfile)
+                DrawerAction("⚙", "Paramètres", onSettings)
+                DrawerAction("ⓘ", "À propos", onAbout)
+                DrawerAction("§", "Conditions d'utilisation", onTerms)
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onLogout, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD13438))) {
+                    Text("Se déconnecter")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DrawerAction(icon: String, label: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onClick() }.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(icon, style = MaterialTheme.typography.titleLarge)
+        Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun ClientInfoDialog(
+    title: String,
+    icon: String,
+    body: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, style = MaterialTheme.typography.headlineSmall)
+                Text(title, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = { Text(body) },
+        confirmButton = {
+            Button(onClick = onDismiss, shape = RoundedCornerShape(16.dp)) { Text("OK") }
+        }
+    )
+}
+
+@Composable
+fun ClientSettingsDialog(
+    language: String,
+    darkMode: Boolean,
+    notificationsEnabled: Boolean,
+    onLanguageChange: (String) -> Unit,
+    onDarkModeChange: (Boolean) -> Unit,
+    onNotificationsChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (language == "en") "Settings" else "Paramètres") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(if (language == "en") "Language" else "Langue", fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(onClick = { onLanguageChange("fr") }, label = { Text("Français") })
+                    AssistChip(onClick = { onLanguageChange("en") }, label = { Text("English") })
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (language == "en") "Dark mode" else "Mode sombre")
+                    Switch(checked = darkMode, onCheckedChange = onDarkModeChange)
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (language == "en") "Notifications" else "Notifications")
+                    Switch(checked = notificationsEnabled, onCheckedChange = onNotificationsChange)
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text(if (language == "en") "OK" else "Valider") } }
+    )
+}
+
+
+
+@Composable
+fun SimpleClientCard(text: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(3.dp)
+    ) {
+        Text(text = text, modifier = Modifier.padding(16.dp), color = Color.Gray)
+    }
+}
+
+@Composable
+fun ClientMessagesTab(
+    clientId: String,
+    fullName: String,
+    conversations: List<ClientConversationUi>,
+    selectedConversation: ClientConversationUi?,
+    onBack: () -> Unit,
+    onSelectConversation: (ClientConversationUi) -> Unit,
+    onRefresh: () -> Unit
+) {
+    val db = FirebaseFirestore.getInstance()
+    var messages by remember(selectedConversation?.id) { mutableStateOf(listOf<ClientChatMessageUi>()) }
+    var text by remember(selectedConversation?.id) { mutableStateOf("") }
+    var localMessage by remember { mutableStateOf("") }
+
+    fun loadMessages(conversation: ClientConversationUi) {
+        db.collection("conversations").document(conversation.id)
+            .collection("messages")
+            .get()
+            .addOnSuccessListener { result ->
+                messages = result.documents.map { doc ->
+                    ClientChatMessageUi(
+                        id = doc.id,
+                        senderId = doc.getString("senderId") ?: "",
+                        senderRole = doc.getString("senderRole") ?: "",
+                        text = doc.getString("text") ?: "",
+                        createdAt = doc.getLong("createdAt") ?: 0L
+                    )
+                }.sortedBy { it.createdAt }
+                db.collection("conversations").document(conversation.id).update("unreadForClient", 0L)
+            }
+            .addOnFailureListener { localMessage = "Erreur chargement messages : ${it.message}" }
+    }
+
+    fun sendMessage(conversation: ClientConversationUi) {
+        val content = text.trim()
+        if (content.isBlank()) return
+        val now = System.currentTimeMillis()
+        val convRef = db.collection("conversations").document(conversation.id)
+        val msg = hashMapOf(
+            "senderId" to clientId,
+            "senderRole" to "client",
+            "text" to content,
+            "createdAt" to now
+        )
+        convRef.collection("messages").add(msg).addOnSuccessListener {
+            convRef.update(
+                mapOf(
+                    "lastMessage" to content,
+                    "updatedAt" to now,
+                    "unreadForAgency" to 1L,
+                    "clientName" to fullName
+                )
+            )
+            text = ""
+            loadMessages(conversation)
+            onRefresh()
+        }.addOnFailureListener { localMessage = "Erreur envoi : ${it.message}" }
+    }
+
+    LaunchedEffect(selectedConversation?.id) {
+        selectedConversation?.let { if (it.id.isNotBlank()) loadMessages(it) }
+    }
+
+    if (selectedConversation == null || selectedConversation.id.isBlank()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = onBack, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("← Retour") }
+                    OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(16.dp)) { Text("Actualiser") }
+                }
+            }
+            item { Text("Messages", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Vos discussions avec les agences", color = Color.Gray) }
+            if (conversations.isEmpty()) {
+                item { SimpleClientCard("Aucun message pour le moment.") }
+            } else {
+                items(conversations) { conversation ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelectConversation(conversation) },
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        elevation = CardDefaults.cardElevation(4.dp)
+                    ) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(Modifier.width(46.dp).height(46.dp).clip(CircleShape).background(Color(0xFF1DA1F2)), contentAlignment = Alignment.Center) { Text(conversation.agencyName.take(1).ifBlank { "A" }, color = Color.White, fontWeight = FontWeight.Bold) }
+                            Column(Modifier.weight(1f)) {
+                                Text(conversation.agencyName.ifBlank { "Agence" }, fontWeight = FontWeight.Bold)
+                                Text(conversation.carName.ifBlank { "Discussion générale" }, color = Color.Gray)
+                                if (conversation.lastMessage.isNotBlank()) Text(conversation.lastMessage, color = Color.Gray)
+                            }
+                            if (conversation.unreadForClient > 0) {
+                                Box(Modifier.width(24.dp).height(24.dp).clip(CircleShape).background(Color(0xFFD13438)), contentAlignment = Alignment.Center) { Text(conversation.unreadForClient.toString(), color = Color.White, style = MaterialTheme.typography.bodySmall) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { onSelectConversation(ClientConversationUi()) }, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("← Retour") }
+                Column { Text(selectedConversation.agencyName, fontWeight = FontWeight.Bold); Text(selectedConversation.carName.ifBlank { "Discussion" }, color = Color.Gray) }
+            }
+            if (localMessage.isNotEmpty()) Text(localMessage, color = MaterialTheme.colorScheme.error)
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (messages.isEmpty()) item { SimpleClientCard("Aucun message dans cette discussion.") }
+                items(messages) { msg ->
+                    val mine = msg.senderRole == "client"
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+                        Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (mine) Color(0xFF1DA1F2) else Color.White)) {
+                            Text(msg.text, modifier = Modifier.padding(12.dp), color = if (mine) Color.White else Color.Black)
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.weight(1f), label = { Text("Écrire un message") }, shape = RoundedCornerShape(18.dp))
+                Button(onClick = { sendMessage(selectedConversation) }, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DA1F2))) { Text("Envoyer") }
+            }
+        }
+    }
+}
+
 @Composable
 fun ClientBottomBar(
     selectedTab: String,
+    unreadMessagesCount: Int,
+    language: String,
     onTabSelected: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2416,10 +2957,11 @@ fun ClientBottomBar(
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BottomItem("home", "Accueil", "⌂", selectedTab, onTabSelected)
-            BottomItem("favorites", "Favoris", "♡", selectedTab, onTabSelected)
-            BottomItem("reservations", "Réserv.", "▣", selectedTab, onTabSelected)
-            BottomItem("profile", "Profil", "●", selectedTab, onTabSelected)
+            BottomItem("home", if (language == "en") "Home" else "Accueil", "⌂", selectedTab, onTabSelected)
+            BottomItem("favorites", if (language == "en") "Favorites" else "Favoris", "♡", selectedTab, onTabSelected)
+            BottomItem("reservations", if (language == "en") "Bookings" else "Réserv.", "▣", selectedTab, onTabSelected)
+            BottomItem("messages", if (unreadMessagesCount > 0) "Msg $unreadMessagesCount" else if (language == "en") "Messages" else "Messages", "✉", selectedTab, onTabSelected)
+            BottomItem("profile", if (language == "en") "Profile" else "Profil", "●", selectedTab, onTabSelected)
         }
     }
 }
@@ -2476,6 +3018,62 @@ fun dateRangesOverlap(
     return start1 <= end2 && start2 <= end1
 }
 
+
+
+fun normalizeDayMillis(millis: Long): Long {
+    val calendar = Calendar.getInstance()
+    calendar.timeInMillis = millis
+    calendar.set(Calendar.HOUR_OF_DAY, 0)
+    calendar.set(Calendar.MINUTE, 0)
+    calendar.set(Calendar.SECOND, 0)
+    calendar.set(Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
+}
+
+fun buildReservedDays(reservations: List<ClientReservationUi>): Set<Long> {
+    val days = mutableSetOf<Long>()
+    val oneDay = 24 * 60 * 60 * 1000L
+    reservations.filter { it.status == "accepted" }.forEach { reservation ->
+        var current = normalizeDayMillis(reservation.startDateMillis)
+        val end = normalizeDayMillis(reservation.endDateMillis)
+        while (current <= end) {
+            days.add(current)
+            current += oneDay
+        }
+    }
+    return days
+}
+
+fun rangeContainsReservedDay(startMillis: Long, endMillis: Long, reservedDays: Set<Long>): Boolean {
+    val oneDay = 24 * 60 * 60 * 1000L
+    var current = normalizeDayMillis(startMillis)
+    val end = normalizeDayMillis(endMillis)
+    while (current <= end) {
+        if (reservedDays.contains(current)) return true
+        current += oneDay
+    }
+    return false
+}
+
+fun nextBlockedDayAfter(startMillis: Long, reservedDays: Set<Long>): Long {
+    return reservedDays.filter { it > normalizeDayMillis(startMillis) }.minOrNull() ?: Long.MAX_VALUE
+}
+
+fun monthCells(monthCalendar: Calendar): List<Long> {
+    val cal = monthCalendar.clone() as Calendar
+    cal.set(Calendar.DAY_OF_MONTH, 1)
+    val firstDay = cal.get(Calendar.DAY_OF_WEEK)
+    val mondayBasedBlank = (firstDay + 5) % 7
+    val result = mutableListOf<Long>()
+    repeat(mondayBasedBlank) { result.add(0L) }
+    val max = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+    for (day in 1..max) {
+        cal.set(Calendar.DAY_OF_MONTH, day)
+        result.add(normalizeDayMillis(cal.timeInMillis))
+    }
+    while (result.size % 7 != 0) result.add(0L)
+    return result
+}
 
 fun todayStartMillis(): Long {
     val calendar = Calendar.getInstance()
