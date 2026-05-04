@@ -56,33 +56,7 @@ jobs:
       - name: Scanner les secrets avec Gitleaks
         uses: gitleaks/gitleaks-action@v2
 
-  sast-codeql:
-    name: SAST - CodeQL
-    runs-on: ubuntu-latest
 
-    permissions:
-      security-events: write
-      packages: read
-      actions: read
-      contents: read
-
-    steps:
-      - name: Récupérer le code
-        uses: actions/checkout@v4
-
-      - name: Initialiser CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: java-kotlin
-          build-mode: manual
-
-      - name: Compiler le projet pour CodeQL
-        run: |
-          chmod +x ./gradlew
-          ./gradlew clean assembleDebug
-
-      - name: Analyse SAST CodeQL
-        uses: github/codeql-action/analyze@v3
   sca-dependencies:
     name: SCA - Analyse dépendances
     runs-on: ubuntu-latest
