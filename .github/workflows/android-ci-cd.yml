@@ -1,4 +1,4 @@
-name: ChikAuto Android CI CD DevSecOps
+name: ChikAuto  Android CI CD DevSecOps
 
 on:
   push:
