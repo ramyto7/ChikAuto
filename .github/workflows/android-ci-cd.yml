@@ -59,8 +59,10 @@ jobs:
   sast-codeql:
     name: SAST - CodeQL
     runs-on: ubuntu-latest
+
     permissions:
       security-events: write
+      packages: read
       actions: read
       contents: read
 
@@ -72,15 +74,15 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: java-kotlin
+          build-mode: manual
 
-      - name: Compiler pour CodeQL
+      - name: Compiler le projet pour CodeQL
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleDebug
+          ./gradlew clean assembleDebug
 
       - name: Analyse SAST CodeQL
         uses: github/codeql-action/analyze@v3
-
   sca-dependencies:
     name: SCA - Analyse dépendances
     runs-on: ubuntu-latest
